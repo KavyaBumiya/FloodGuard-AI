@@ -43,8 +43,11 @@ $url = $null
 for ($i = 1; $i -le 24 -and -not $url; $i++) {
     Start-Sleep -Seconds 5
     $logs = docker compose logs tunnel --no-log-prefix 2>&1 | Out-String
-    $m = [regex]::Match($logs, 'https://[a-z0-9-]+\.trycloudflare\.com')
-    if ($m.Success) { $url = $m.Value }
+    # Take the LAST match. The log buffer survives a restart, so the newest
+    # quick-tunnel URL is the final one; [regex]::Match would return the first
+    # and hand back a hostname that is already dead.
+    $all = [regex]::Matches($logs, 'https://[a-z0-9-]+\.trycloudflare\.com')
+    if ($all.Count -gt 0) { $url = $all[$all.Count - 1].Value }
 }
 
 if (-not $url) {
@@ -67,29 +70,46 @@ catch {
     Write-Host "  The tunnel may still be negotiating; try again in 20 s.`n" -ForegroundColor Yellow
 }
 
+# Repoint the edge Worker at the new tunnel URL. This is the whole point of
+# the Worker: the frontend talks to a fixed *.workers.dev hostname, so a new
+# random tunnel URL costs one KV write and no redeploy of anything.
+$proxyDir = Join-Path $PSScriptRoot '..\proxy'
+$hasWorker = Test-Path (Join-Path $proxyDir 'wrangler.toml')
+
+if ($hasWorker) {
+    Write-Host "Repointing the edge Worker at the new tunnel URL..." -ForegroundColor Cyan
+    Push-Location $proxyDir
+    try {
+        npx wrangler kv key put --binding=ORIGIN ORIGIN_URL $url 2>&1 | Out-String | Write-Host
+        Write-Host "  Worker now points at $url" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  Could not update KV: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  Update by hand:  npx wrangler kv key put --binding=ORIGIN ORIGIN_URL $url" -ForegroundColor Yellow
+    }
+    finally { Pop-Location }
+}
+
 Write-Host "===============================================================" -ForegroundColor DarkCyan
-Write-Host " Set this in Vercel:  Project -> Settings -> Environment Variables" -ForegroundColor Cyan
-Write-Host "===============================================================" -ForegroundColor DarkCyan
-Write-Host ""
-Write-Host "  Name : NEXT_PUBLIC_API_BASE"
-Write-Host "  Value: $url"
-Write-Host ""
-Write-Host "  Apply to: Production, Preview AND Development, then redeploy."
-Write-Host "  NEXT_PUBLIC_ values are inlined at BUILD time, so an env change alone"
-Write-Host "  does nothing until the project is rebuilt (Deployments -> redeploy)."
-Write-Host ""
-Write-Host "  Also set on the API side, then restart it:"
-Write-Host '    docker compose stop backend && docker compose start backend'
-Write-Host "  with this in a root .env:"
-Write-Host "    FRONTEND_ORIGIN=https://your-app.vercel.app"
+if ($hasWorker) {
+    Write-Host " Nothing to change on Vercel. The frontend keeps using the" -ForegroundColor Cyan
+    Write-Host " fixed *.workers.dev URL and now resolves through to:" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "   $url" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host " NEXT_PUBLIC_API_BASE must already be set to the Worker URL." -ForegroundColor Cyan
+}
+else {
+    Write-Host " Set this in Vercel:  Project -> Settings -> Environment Variables" -ForegroundColor Cyan
+    Write-Host "===============================================================" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "  Name : NEXT_PUBLIC_API_BASE"
+    Write-Host "  Value: $url"
+    Write-Host ""
+    Write-Host "  Apply to: Production, Preview AND Development, then redeploy."
+    Write-Host "  NEXT_PUBLIC_ values are inlined at BUILD time, so an env change alone"
+    Write-Host "  does nothing until the project is rebuilt (Deployments -> redeploy)."
+}
 Write-Host ""
 Write-Host "  Test with:  curl.exe $url/health" -ForegroundColor DarkGray
 Write-Host "  Stop with:  .\scripts\start-tunnel.ps1 -Stop`n" -ForegroundColor DarkCyan
-
-if ($url -match 'trycloudflare') {
-    Write-Host "  NOTE: a quick-tunnel URL is RANDOM and changes every restart." -ForegroundColor Yellow
-    Write-Host "  That means a Vercel redeploy every time you restart the tunnel." -ForegroundColor Yellow
-    Write-Host "  For a stable URL, create a named tunnel and set CLOUDFLARE_TUNNEL_CMD" -ForegroundColor Yellow
-    Write-Host "  + TUNNEL_TOKEN in a root .env - see docs/16-DEPLOYMENT.md." -ForegroundColor Yellow
-    Write-Host ""
-}
