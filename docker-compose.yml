@@ -163,8 +163,13 @@ services:
       tunnel --no-autoupdate
       --url ${CLOUDFLARE_ORIGIN:-http://host.docker.internal:8000}
     environment:
-      # Only read for a named tunnel; ignored by the quick tunnel.
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+      # Pass-through, NOT `${TUNNEL_TOKEN:-}`: an EMPTY but present TUNNEL_TOKEN
+      # makes cloudflared treat the process as a NAMED tunnel. It still prints a
+      # quick-tunnel URL, then every connect fails with
+      # "Unauthorized: Tunnel not found" — a tunnel that looks up and serves
+      # nothing. Listing the name (no value) forwards it only when you have
+      # actually set it for a named tunnel.
+      - TUNNEL_TOKEN
     restart: unless-stopped
 
 volumes:
