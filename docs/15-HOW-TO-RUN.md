@@ -231,11 +231,36 @@ Open **http://localhost:3000**.
 (`lib/api.ts:9`), so the copy step is optional locally. It is **required** if the backend is on
 another host, and it drives the Socket.IO URL too (`lib/socket.ts:34`).
 
+### Opening it from another device on the same WiFi
+
+`npm run dev` binds to `0.0.0.0`, so a phone or laptop on the room WiFi can load the app from this
+machine's LAN address instead of `localhost`:
+
+```powershell
+# 1. this machine's WiFi address
+Get-NetIPAddress -InterfaceAlias WiFi -AddressFamily IPv4 |
+  Select-Object -ExpandProperty IPAddress      # e.g. 192.168.0.101
+
+# 2. the browser on the other device
+#    http://192.168.0.101:3000
+```
+
+Two settings must match that address or the browser gets a network/CORS error:
+
+| File | Setting | Value |
+|---|---|---|
+| `Frontend/.env.local` | `NEXT_PUBLIC_API_BASE` | `http://192.168.0.101:8000` — then restart `npm run dev` |
+| root `.env` | `FRONTEND_ORIGIN` | `http://localhost:3000,http://192.168.0.101:3000` — then `docker compose up -d` |
+
+The API already publishes `0.0.0.0:8000`, so no compose change is needed for the backend itself.
+Ports 5432/6379 stay on loopback on purpose. When the router hands out a different IP, change the
+two values above — see `docs/16-DEPLOYMENT.md` §A.8.
+
 | Script | Command |
 |---|---|
-| `npm run dev` | `next dev` |
+| `npm run dev` | `next dev -H 0.0.0.0` (LAN-reachable) |
 | `npm run build` | `next build` (fails on type errors) |
-| `npm start` | `next start` |
+| `npm start` | `next start -H 0.0.0.0` |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | `eslint .` |
 | `npm test` | `node --test lib/*.test.ts` |

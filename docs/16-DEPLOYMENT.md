@@ -191,13 +191,15 @@ Get-NetRoute -DestinationPrefix 0.0.0.0/0 |
   Select-Object InterfaceAlias, NextHop
 ```
 
-### What you must change: the ESP32, and only if it uses the LAN IP
+### What you must change: anything holding your LAN IP
 
 | Consumer | Uses | Change needed? |
 |---|---|---|
 | **Vercel frontend** | the **tunnel URL** | **No.** The tunnel is an outbound connection from your PC, so it survives any IP change. The URL stays valid. |
 | **Docker Compose** | service names (`db`, `redis`, `backend`) over the internal bridge network | **No.** Nothing binds a host IP except `127.0.0.1`, which never moves. |
-| **Frontend running locally** | `http://localhost:8000` | **No.** |
+| **Frontend on `localhost` only** | `http://127.0.0.1:8000` | **No.** |
+| **`Frontend/.env.local`** | `NEXT_PUBLIC_API_BASE=http://<lan-ip>:8000` (set for a LAN demo) | **Yes.** Restart `npm run dev` after editing. |
+| **root `.env`** | `FRONTEND_ORIGIN` (set for a LAN demo) | **Yes.** Then `docker compose up -d`. |
 | **ESP32 firmware** | a hardcoded host | **Yes, if it points at the LAN IP.** Change `HOST` to the new address. |
 
 So if the firmware posts to `http://<old-ip>:8000/api/iot/telemetry`, update it to the new address. If
@@ -206,7 +208,7 @@ then also works from outside your WiFi.
 
 ```cpp
 // Option 1: LAN only. Simplest, but breaks when you change WiFi.
-const char* HOST = "10.218.161.116";   // <- your current address
+const char* HOST = "192.168.0.101";   // <- your current address
 
 // Option 2: the tunnel. Survives IP changes, works off-LAN. Needs TLS.
 const char* HOST = "discrete-explaining-gel-look.trycloudflare.com";
@@ -225,8 +227,9 @@ curl http://localhost:8000/healthz
 # 2. and reachable on the NEW address
 curl http://<new-ip>:8000/health
 
-# 3. the tunnel is still serving (it should be - nothing to restart)
-curl https://<tunnel-url>/healthz
+# 3. the browser origin CORS answers for (edit FRONTEND_ORIGIN otherwise)
+curl -i -H "Origin: http://<new-ip>:3000" http://<new-ip>:8000/health
+#    -> access-control-allow-origin: http://<new-ip>:3000
 
 # 4. the databases are still NOT on the LAN
 Test-NetConnection <new-ip> -Port 5432   # expect False
