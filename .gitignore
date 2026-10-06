@@ -42,3 +42,5 @@ backend/app/ml/artifacts/*.joblib
 Thumbs.db
 .vscode/
 .idea/
+.vercel
+.env*

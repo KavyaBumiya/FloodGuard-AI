@@ -149,7 +149,19 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    command: ${CLOUDFLARE_TUNNEL_CMD:-tunnel --no-autoupdate --url http://backend:8000}
+    # Origin is the PUBLISHED PORT on the Docker host, not the compose service
+    # name. cloudflared resolves the origin once at connect time and then holds
+    # that IP for the life of the tunnel, so pointing it at `backend:8000`
+    # breaks every time the backend is rebuilt: the container comes back with a
+    # new IP and the tunnel keeps dialling the dead one
+    # ("dial tcp 172.20.0.4:8000: connection refused" -> HTTP 502 -> the browser
+    # reports a CORS error because there is no origin to return headers from).
+    #
+    # host.docker.internal is stable across container rebuilds, so this survives
+    # `docker compose up --build`.
+    command: >-
+      tunnel --no-autoupdate
+      --url ${CLOUDFLARE_ORIGIN:-http://host.docker.internal:8000}
     environment:
       # Only read for a named tunnel; ignored by the quick tunnel.
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
