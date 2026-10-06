@@ -152,18 +152,29 @@ Indexes (4):
 
 Indexes: `ix_rejected_node_time (node_code, received_at)` and the auto `ix_rejected_readings_node_code`.
 
-`reject_reason` values actually produced:
+Every `reject_reason` value, all now produced by `app/services/ingest.py` (the single
+transport-neutral validator shared by the HTTP endpoint and Replay mode):
 
-| Reason | Where |
+| Reason | Source |
 |---|---|
-| `"Sensor reported invalid reading (valid=false)"` | `iot.py:324` |
-| `"Missing timestamp"` | `mqtt_ingestion.py:204` |
-| `"Invalid numeric field: …"` | `mqtt_ingestion.py:239` |
-| `"Invalid timestamp format"` | `mqtt_ingestion.py:258` |
-| `"Invalid source: <x>"` | `mqtt_ingestion.py:265` |
-| `"Water level out of range: <x>"` | `mqtt_ingestion.py:271` |
-| `"Rainfall out of range: <x>"` | `mqtt_ingestion.py:275` |
-| `"Sensor reported invalid reading"` (MQTT) | `mqtt_ingestion.py:279` |
+| `"Sensor reported invalid reading"` | device sent `valid: false` |
+| `"Missing timestamp"` | no `timestamp` field |
+| `"Invalid timestamp format"` | not parseable as ISO 8601 |
+| `"Timestamp outside ±24h of server time: …"` | device clock implausible |
+| `"Invalid numeric field: …"` | `water_level_cm` missing or non-numeric |
+| `"Invalid source: <x>"` | `source` not in `{iot, simulated, replay, scenario}` |
+| `"Soil moisture out of range: <x>"` | outside 0–1 |
+| `"Water level out of range: <x>"` | outside 0–500 cm, or non-finite |
+| `"Rainfall out of range: <x>"` | outside 0–500 mm/hr, or non-finite |
+
+Three rejections are **not** audited, because they are not payload defects — they describe the
+target rather than the body, and the caller maps them to HTTP codes:
+
+| Condition | HTTP |
+|---|---|
+| `"Missing node_code"` | 400 |
+| `"Unregistered node: <code>"` | 400 (live hardware must be registered first) |
+| `"Node <code> is deactivated."` | 403 (set by `get_current_device` before this point) |
 
 The alert engine's sensor-fault rule counts rows in the **last hour** and fires at 3
 (`alert_engine.py:751-775`).

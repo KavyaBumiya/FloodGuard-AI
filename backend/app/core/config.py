@@ -13,6 +13,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]  # .../backend
@@ -34,20 +35,25 @@ class Settings(BaseSettings):
 
     # ── Database ─────────────────────────────────────────────────────────
     # Default target is the docker-compose `db` service (PostGIS).
+    # Managed hosts (Render, Heroku, Neon, Supabase) hand out a plain
+    # `postgresql://` URL, so the scheme is normalised in `_force_asyncpg`
+    # below rather than trusted as-is.
     database_url: str = "postgresql+asyncpg://floodguard:floodguard@db:5432/floodguard"
+    # Append `?ssl=require` to the DSN when the host is not loopback/docker.
+    # Left unset, the decision is made automatically; set it explicitly to
+    # `false` for a private-network Postgres that rejects TLS negotiation, or
+    # `true` to force TLS on a host whose name looks local.
+    database_require_ssl: bool | None = None
 
     # ── Redis (cache + Socket.IO event bus) ──────────────────────────────
     redis_url: str = "redis://redis:6379/0"
 
-    # ── MQTT broker (ESP32 telemetry ingress) ────────────────────────────
-    mqtt_broker_host: str = "mqtt"
-    mqtt_broker_port: int = 1883
-    mqtt_username: str = ""
-    mqtt_password: str = ""
-    mqtt_topic_prefix: str = "floodguard"
-    # Set false to disable the MQTT subscriber entirely (HTTP ingest only).
-    mqtt_keepalive_seconds: int = 60
-    mqtt_enabled: bool = True
+    # ── Socket.IO horizontal scaling ─────────────────────────────────────
+    # python-socketio needs an external message queue to fan an emit out to
+    # every uvicorn worker; without it a client connected to worker B never
+    # sees an event published on worker A. The backend already publishes to
+    # Redis, so this costs nothing extra.
+    socketio_message_queue: bool = True
 
     # ── Device auth ──────────────────────────────────────────────────────
     # Bootstrap secret gating POST /api/iot/devices (registration only).
@@ -149,6 +155,63 @@ class Settings(BaseSettings):
             "north": self.study_area_max_lat,
             "east": self.study_area_max_lon,
         }
+
+    # ── Database DSN ─────────────────────────────────────────────────────
+    # Hosts that are definitively not on the public internet, so TLS
+    # negotiation is neither needed nor always offered.
+    _LOCAL_DB_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "db", "postgres", "localhost:5432"})
+
+    @field_validator("database_url")
+    @classmethod
+    def _force_asyncpg(cls, value: str) -> str:
+        """Pin the DSN to the asyncpg driver.
+
+        Render, Heroku, Neon and Supabase all expose `DATABASE_URL` as a bare
+        `postgresql://`, which SQLAlchemy resolves to the *blocking* psycopg2
+        driver. `create_async_engine` then raises "The asyncio extension
+        requires an async driver" before the app can answer even /health.
+
+        Alembic already rewrote the scheme in `alembic/env.py`, so the bug was
+        invisible locally: migrations connected while the app did not. Doing it
+        once here means the engine, the migrations and the scripts all read the
+        same string.
+        """
+        if value.startswith("postgres://"):
+            value = "postgresql://" + value[len("postgres://") :]
+        if value.startswith("postgresql://"):
+            value = "postgresql+asyncpg://" + value[len("postgresql://") :]
+        return value
+
+    @property
+    def database_host(self) -> str:
+        """Bare hostname from the DSN, without the port."""
+        authority = self.database_url.split("@", 1)[-1].split("/", 1)[0]
+        return authority.split(":", 1)[0].lower()
+
+    @property
+    def database_requires_ssl(self) -> bool:
+        """Whether `ssl=require` should be appended to the DSN.
+
+        `database_require_ssl` wins when set; otherwise anything that is not
+        loopback or a compose service is assumed to be remote and gets TLS.
+        """
+        if self.database_require_ssl is not None:
+            return self.database_require_ssl
+        return self.database_host not in self._LOCAL_DB_HOSTS
+
+    @property
+    def database_dsn(self) -> str:
+        """Final DSN for `create_async_engine`: asyncpg, plus TLS if required.
+
+        An explicit `ssl=`/`sslmode=` in the URL is always respected, so an
+        operator can hand us a fully specified DSN and we will not touch it.
+        """
+        url = self.database_url
+        if not self.database_requires_ssl:
+            return url
+        if "ssl=" in url or "sslmode=" in url:
+            return url
+        return f"{url}{'&' if '?' in url else '?'}ssl=require"
 
     @property
     def is_development(self) -> bool:

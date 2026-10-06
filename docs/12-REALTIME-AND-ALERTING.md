@@ -1,4 +1,4 @@
-# 12 — Real-time Delivery and the Alert Engine
+﻿# 12 — Real-time Delivery and the Alert Engine
 
 ---
 
@@ -6,12 +6,12 @@
 
 ```
   ESP32 / curl
-      │  MQTT  floodguard/nodes/<code>/telemetry        (paho network thread)
-      │  HTTP   POST /api/iot/telemetry
+      │  HTTPS  POST /api/iot/telemetry      (Authorization: Bearer <device token>)
       ▼
-  ┌───────────────────────────────────────────────────────────────────────┐
-  │ ingest  (mqtt_ingestion / iot.py → telemetry.ingest_telemetry_reading)│
-  └───────────────────────────────────────────────────────────────────────┘
+  ┌───────────────────────────────────────────────────────────────────────────────┐
+  │ api/iot.py (Pydantic)  →  services/ingest.py  →  telemetry.ingest_telemetry… │
+  │                        (validate · resolve node · audit · idempotency)        │
+  └───────────────────────────────────────────────────────────────────────────────┘
       │ writes DB, commits
       ▼
   domain services publish envelopes
@@ -156,64 +156,68 @@ Five parallel REST calls per tick: `/api/flood/nodes`, `/api/flood/current-summa
 Combined with the DOM-timed handlers, the effective behaviour is: **the UI is at most ~3 s stale
 regardless of the socket.** The socket is a latency optimisation, not the data path.
 
-## A.7 MQTT
+## A.7 Telemetry ingress (HTTP only)
 
-### Broker config — `backend/deploy/mosquitto/mosquitto.conf`
+There is one ingestion path. The broker, its config file, its background engine and the `paho-mqtt`
+dependency have all been removed; see [`09-CONFIGURATION-AND-ENV.md`](09-CONFIGURATION-AND-ENV.md)
+§7 and [`16-DEPLOYMENT.md`](16-DEPLOYMENT.md) §3.
 
-```
-listener 1883 0.0.0.0 / protocol mqtt
-listener 9001 0.0.0.0 / protocol websockets
-allow_anonymous true
-persistence false
-```
-
-### Topic grammar (from `mqtt_ingestion.py:50-54`)
-
-```
-floodguard/nodes/<node_code>/telemetry    ← the only one actually subscribed
-floodguard/nodes/<node_code>/status       ← documented, not subscribed
-floodguard/alerts                         ← documented, not subscribed
-floodguard/system/status                  ← documented, not subscribed
-```
-
-`MQTT_TOPIC_PREFIX` (default `floodguard`) is substituted at `mqtt_ingestion.py:115`.
-
-### Message shape
+### Request shape — `POST /api/iot/telemetry`
 
 ```json
-{ "node_code": "VAD-ESP32-01",        // ignored — the node code comes from the TOPIC
-  "water_level_cm": 14.5,             // required
-  "rainfall_mm_hr": 6.2,              // optional, defaults 0.0
-  "timestamp": "2026-10-06T09:15:00+05:30",   // required
-  "source": "iot",
+{ "node_code": "VAD-ESP32-01",     // must match the bearer token's device
+  "water_level_cm": 14.5,          // required
+  "rainfall_mm_hr": 6.2,           // optional, defaults 0.0
+  "timestamp": "2026-10-06T03:45:00Z",   // required, UTC
   "valid": true,
   "flow_rate": null, "soil_moisture": null, "battery_voltage": null,
-  "event_id": "evt-0001",
-  "name": null, "role": null, "lat": null, "lon": null,
-  "reference_elevation_m": null, "calibration_offset_cm": 0.0,
-  "baseline_level_cm": null, "warning_threshold_cm": null }
+  "event_id": "evt-0001" }
 ```
 
-> The node code is taken from `topic_parts[-2]` (`mqtt_ingestion.py:183`), **not** from the payload —
-> which is correct, since the topic is the authenticated-ish namespace.
+`source` is **not** accepted from the device — the server sets `source="iot"` for authenticated
+hardware, so a client cannot claim to be a simulated or replay source.
 
-### Validation (`_validate_reading`, line 230)
+> Node identity is taken from the **bearer token** (`get_current_device`), and the body's
+> `node_code` must agree or the request is `403`. This is the guarantee the old broker could not
+> give: an anonymous publisher could name itself `MR-V…` and self-register a node.
+
+### Response
+
+The endpoint declares `status_code=201`, so **every success is 201** and the body distinguishes
+them:
+
+| Status | Body | Meaning |
+|---|---|---|
+| `201` | `{"id":N,"status":"accepted",…}` | stored and processed |
+| `201` | `{"id":N,"status":"duplicate",…}` | same `event_id` already stored — **the retry-safe path**, `N` is the original row |
+| `422` | `{"detail":[…]}` | **Pydantic schema** failure: missing field, wrong type, or a `ge`/`le` range breach (`water_level_cm` 0–500, `rainfall_mm_hr` 0–500). Rejected before `ingest.py` runs, so these are *not* written to `rejected_readings` |
+| `400` | `{"detail":"…"}` | **ingest-level** rejection: `valid:false`, timestamp stale or unparseable, non-finite number. Written to `rejected_readings` |
+| `401` | — | missing/malformed bearer token — raised by the auth dependency, before rate limiting |
+| `403` | — | token's node ≠ body `node_code`, or the node is deactivated |
+| `429` | `{"detail":"…"}` + `Retry-After` | per-device rate limit (`IOT_TELEMETRY_RATE_LIMIT_PER_MINUTE`, default 12/min) |
+
+Note the field is **`id`**, not `reading_id`. The response is
+`{id, node_code, status, risk_level, risk_score, received_at}`.
+
+### Validation — `services/ingest.py`
 
 | Check | Failure reason string |
 |---|---|
-| `float(payload["water_level_cm"])` | `Invalid numeric field: {exc}` |
+| `float(payload["water_level_cm"])` | `Invalid numeric field: …` |
 | `float(payload.get("rainfall_mm_hr", 0.0))` | same |
 | `timestamp` present | `Missing timestamp` |
 | `datetime.fromisoformat(ts.replace("Z","+00:00"))` | `Invalid timestamp format` |
+| within ±24 h of server time | `Timestamp outside ±24h of server time: …` |
 | `source in {iot,simulated,replay,scenario}` | `Invalid source: {source}` |
 | `0 <= water_level_cm <= 500` | `Water level out of range: {x}` |
 | `0 <= rainfall_mm_hr <= 500` | `Rainfall out of range: {x}` |
+| `0 <= soil_moisture <= 1` | `Soil moisture out of range: {x}` |
 | `payload["valid"] is not False` | `Sensor reported invalid reading` |
 
-Invalid messages go to `rejected_readings` and are **logged, never silently dropped** (PRD Feature 6
+Invalid payloads go to `rejected_readings` and are **logged, never silently dropped** (PRD Feature 6
 acceptance criterion).
 
-### Node auto-creation policy (`_get_or_create_node`, line 285)
+### Node auto-creation policy
 
 ```python
 if node exists: return node
@@ -225,30 +229,33 @@ if source not in ("simulated", "scenario", "replay"):
 # else create a virtual node at payload lat/lon (default 72.8830 / 19.0713)
 ```
 
-The comment at lines 297-300 states the threat: "MQTT ingest is unauthenticated, so a code prefix
-must never be treated as identity: any publisher could otherwise self-register a node (and even
-choose its node_type) simply by naming itself 'MR-V…'."
+Real hardware must be registered first; only `simulated` / `scenario` / `replay` readings may create
+a virtual node. With HTTPS this is no longer a security boundary — it is a data-hygiene rule —
+but it is retained because the replay and demo paths still depend on it.
 
-### Connection lifecycle
+### What was removed
 
-| Aspect | Implementation |
+| Removed | Replaced by |
 |---|---|
-| Client | `paho.Client(CallbackAPIVersion.VERSION2, client_id=f"floodguard-backend-{uuid4().hex[:8]}")` |
-| Transport | `connect_async(host, port, keepalive=60)` + `loop_start()` — paho owns its own network thread |
-| Why not aiomqtt | `app/__init__.py:6-9`: paho's blocking socket works on Windows' ProactorEventLoop; `loop.add_writer` (used by aiomqtt) is not implemented there |
-| Thread hand-off | `loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._handle_message(t, p)))` |
-| Connect timeout | 15 s → `mqtt_connection_timeout` → reconnect |
-| Reconnect backoff | 5 s |
-| Liveness | `while self._running and client.is_connected(): await asyncio.sleep(1)` |
-| Shutdown | `loop_stop()` + `disconnect()` in `finally` |
-| Disable | `MQTT_ENABLED=false` skips the engine entirely in `main._start_engines()` |
+| `services/mqtt_ingestion.py` | `services/ingest.py` (`ingest_payload()`) |
+| `backend/deploy/mosquitto/mosquitto.conf` | — (nothing) |
+| `mqtt` compose service, ports 1883/9001 | — |
+| `MQTT_BROKER_*`, `MQTT_TOPIC_PREFIX`, `MQTT_ENABLED` | — |
+| `paho.Client` / `connect_async` / `loop_start()` reconnect loop | request lifecycle, handled by uvicorn |
+| `MQTTService` start/stop in `main._start_engines()` | — |
 
-### Device auth asymmetry
+### Operational effect
 
-| Path | Auth |
-|---|---|
-| `POST /api/iot/telemetry` | SHA-256 bearer token, constant-time compare, 403 for deactivated nodes |
-| MQTT topic | **none** — only the "must be pre-registered" rule |
+| | With a broker | HTTP only |
+|---|---|---|
+| Extra dependency at demo time | broker process + credentials | none |
+| Duplicate delivery | re-ingested as new rows | rejected as `duplicate` via `event_id` |
+| In-place node metadata updates | not possible | supported (optional `lat`/`lng`/`warning_threshold_cm`) |
+| Ingress on a PaaS (Render) | needs a public port | works over the normal HTTPS port |
+| Per-connection auth | none | SHA-256 bearer token, constant-time compare |
+
+The `app/__init__.py` selector-loop policy is **kept** even though paho is gone — `sqlalchemy[asyncio]`
+and `aiosqlite` need it on Windows.
 
 ---
 

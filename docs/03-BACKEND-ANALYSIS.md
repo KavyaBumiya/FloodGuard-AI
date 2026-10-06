@@ -1,4 +1,4 @@
-# 03 — Backend Analysis, module by module
+﻿# 03 — Backend Analysis, module by module
 
 ---
 
@@ -11,7 +11,7 @@
 11-31    imports, logger, settings = get_settings()
 36-39    _ensure_postgis()      -> CREATE EXTENSION IF NOT EXISTS postgis
 42-61    _verify_schema()       -> compares Base.metadata.tables with the live table list
-64-85    _start_engines()       -> starts mqtt + forecast + alert engines, each in try/except
+64-85    _start_engines()       -> starts forecast + alert engines, each in try/except
 88-103   _stop_engines()        -> reverse, each in try/except
 106-130  lifespan()              -> the startup/shutdown contract
 133-142  app = FastAPI(...)
@@ -59,8 +59,12 @@ for name, start in starters:
 
 **`/health`** (lines 154-184) never raises. It checks the DB with `SELECT 1`, Redis with `PING`, and
 Open-Meteo with `open_meteo.probe()`. Any failure downgrades `status` to `"degraded"` and records
-`error: <ExceptionTypeName>`. `mqtt` is reported as `"enabled"` / `"disabled"` from config only —
-it is **not** a live broker check.
+`error: <ExceptionTypeName>`. `ingest` is reported as `"http"` — stateless, so unlike the old broker
+field there is nothing to probe.
+
+There is also a **`/healthz`** endpoint that touches nothing at all, for Render's platform liveness
+check, so a slow third-party API cannot get a healthy instance killed (see
+[`16-DEPLOYMENT.md`](16-DEPLOYMENT.md) §5).
 
 **The Socket.IO double-export** (lines 212-227) is a real bug fix, documented in place:
 
@@ -408,7 +412,7 @@ Started in `main._start_engines()`:
 
 | Engine | Loop period | What it does |
 |---|---|---|
-| `mqtt_ingestion` (if `mqtt_enabled`) | event-driven | paho `loop_start()` + subscribe `<prefix>/nodes/+/telemetry`, 5 s reconnect backoff, 15 s connect timeout |
+| `ingest` | request-driven | `ingest_payload()` called inline by `api/iot.py` - no background task, no reconnect loop |
 | `forecast_service` | **60 s** | `generate_all_forecasts()` for every active physical node |
 | `alert_engine` | **30 s** | `evaluate_all()` → per node: threshold, rapid rise, predicted risk, communication, sensor fault |
 

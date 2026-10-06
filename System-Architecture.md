@@ -124,13 +124,13 @@ Supporting libraries: Vite (build tool), React Router, Zustand (state), TanStack
 
 **Tech tags:** `Python` · `PostgreSQL (with PostGIS)` · `Redis`
 
-Supporting stack: FastAPI (REST and WebSocket), Uvicorn, Pydantic (validation), SQLAlchemy plus GeoAlchemy2, asyncpg, Alembic (migrations), paho-mqtt or aiomqtt, Eclipse Mosquitto (MQTT broker), NumPy, SciPy, rasterio, shapely, geopandas, APScheduler or asyncio background tasks.
+Supporting stack: FastAPI (REST and WebSocket), Uvicorn, Pydantic (validation), SQLAlchemy plus GeoAlchemy2, asyncpg, Alembic (migrations), httpx (outbound + telemetry ingress over HTTPS), NumPy, SciPy, rasterio, shapely, geopandas, APScheduler or asyncio background tasks.
 
 ### 2.1 Services inside the backend
 
 The backend is one deployable Python application organised into modules. This keeps the hackathon build simple while preserving clean boundaries.
 
-1. **Ingestion service** — subscribes to MQTT, accepts HTTP telemetry, validates, stores.
+1. **Ingestion service** — accepts HTTPS telemetry, validates, resolves the node from the bearer token, stores.
 2. **Virtual sensor engine** — generates simulated readings and propagates the physical node's changes downstream.
 3. **Forecast service** — loads trained models and produces 15, 30, 60 minute predictions.
 4. **Risk service** — turns forecasts into explainable risk scores.
@@ -142,13 +142,13 @@ The backend is one deployable Python application organised into modules. This ke
 
 ### 2.2 Telemetry ingestion flow
 
-1. The ESP32 publishes JSON to an MQTT topic such as `floodguard/nodes/<node_code>/telemetry`. The virtual sensor engine publishes to the same topic structure.
+1. The ESP32 POSTs JSON to `/api/iot/telemetry` with `Authorization: Bearer <device token>`. The virtual sensor engine calls the same `ingest.ingest_payload()` entry point directly.
 2. The ingestion service receives the message and validates it with Pydantic: node registered, numeric values in plausible ranges, timestamp present and sensible (not far in the future or past).
 3. Invalid readings are rejected, written to the rejected readings table with a reason, and logged. The service keeps running.
 4. Valid readings are stored in the telemetry table (UTC) along with received time, and the latest value is cached in Redis.
 5. The service publishes an internal event on Redis pub/sub, which triggers forecasting, risk scoring, alert evaluation and WebSocket fan-out.
 
-Other MQTT topics: `floodguard/alerts` and `floodguard/system/status`.
+Alerts and status need no device-facing endpoint: they leave the system through Redis pub/sub and Socket.IO, which the browser and the alert engine already consume.
 
 Supporting REST endpoints: register a node, submit a reading (HTTP fallback), list nodes, fetch historical readings for a node.
 
@@ -327,7 +327,7 @@ A `data_origin` column marks each row as historical, synthetic or prototype. A f
 
 ## 4. IoT Layer
 
-**Tech tags:** `ESP32` · `C++ (Arduino framework)` · `MQTT` · `Wi-Fi`
+**Tech tags:** `ESP32` · `C++ (Arduino framework)` · `HTTPS` · `Wi-Fi`
 
 ### 4.1 Hardware components
 
@@ -367,7 +367,7 @@ Verify the real board pinout and the sensor module voltage before wiring.
 
 **Sampling and sending**
 - Sample every 5 to 10 seconds during demonstration.
-- Publish JSON over MQTT with node code, water level, rainfall intensity, timestamp and source tag `iot`. HTTP POST is the fallback.
+- POST JSON with node code, water level, rainfall intensity, timestamp and source tag `iot`, plus a stable `event_id` so a retry after a dropped connection is stored exactly once.
 - If Wi-Fi drops, keep measuring, show readings locally, store a ring buffer of readings in memory and send them when the connection returns.
 - Time sync via NTP so timestamps are consistent.
 
@@ -390,14 +390,14 @@ Verify the real board pinout and the sensor module voltage before wiring.
 
 ### 4.5 Connectivity setup
 
-- Local Wi-Fi hotspot or router with the laptop running the MQTT broker and backend, so the hardware demo works without internet.
-- MQTT broker (Mosquitto) on the laptop; the ESP32 connects to its local IP.
+- Local Wi-Fi hotspot or router with the laptop running the backend, so the hardware demo works without internet.
+- The ESP32 connects to the laptop's local IP over `http://` (TLS is optional on a LAN) or to the deployed HTTPS host.
 - Optional device-side logging for later replay.
 
 ### 4.6 Virtual sensors (software IoT)
 
 - Three to five virtual nodes with codes, locations, roles (upstream, midstream, downstream) and baseline levels.
-- Publish to the same MQTT topic format at the same cadence, with source tag `simulated`.
+- Call the same `ingest_payload()` entry point at the same cadence, with source tag `simulated`.
 - React to the physical node using the delay and attenuation configuration described in Section 2.3.
 
 ### 4.7 Demo readiness
@@ -807,7 +807,7 @@ This final section ties the layers together as a single system design, described
 ### 7.1 Layers at a glance
 
 1. **Edge layer:** the ESP32 station (with OLED, LEDs, buzzer) and the virtual sensor generator.
-2. **Messaging layer:** an MQTT broker (Mosquitto) carrying telemetry, alert and status topics.
+2. **Messaging layer:** Redis pub/sub carrying alert and status events to Socket.IO for browser fan-out.
 3. **Application layer:** the Python backend (FastAPI) containing ingestion, forecasting, risk, simulation, scenarios, alerts, realtime gateway and replay control.
 4. **Data layer:** PostgreSQL with PostGIS for durable and geospatial data, Redis for caching and pub/sub, local files for the DEM, terrain grids and serialised ML models.
 5. **Presentation layer:** the React and TypeScript web app with the dashboard, prediction page, Leaflet 2D map, CesiumJS 3D twin, simulator and alerts pages.
@@ -816,7 +816,7 @@ This final section ties the layers together as a single system design, described
 
 1. A judge pours water into the miniature channel.
 2. The ESP32 reads the ultrasonic distance, applies the median filter and calibration, and updates the OLED and LEDs immediately. If the warning threshold is crossed, the red LED and buzzer activate locally with no network required.
-3. The ESP32 publishes the reading over MQTT to the local broker.
+3. The ESP32 POSTs the reading to `/api/iot/telemetry` with its bearer token.
 4. The ingestion service validates and stores the reading in PostgreSQL and caches the latest value in Redis.
 5. The virtual sensor engine sees the physical change and, after the configured delay and with attenuation, adjusts the downstream virtual nodes.
 6. The forecast service builds features from the recent window and predicts +15, +30 and +60 minute levels for each active node.
@@ -844,7 +844,7 @@ This final section ties the layers together as a single system design, described
 
 ### 7.5 Deployment for the hackathon
 
-- One laptop acts as the local server running the MQTT broker, the Python backend, PostgreSQL with PostGIS, and Redis (for example through Docker Compose).
+- One laptop acts as the local server running the Python backend, PostgreSQL with PostGIS, and Redis (for example through Docker Compose).
 - The React app is served as static files by the backend or a dev server on the same laptop.
 - A local Wi-Fi hotspot connects the ESP32 to the laptop so no internet is needed for the hardware demo.
 - All terrain, roads, buildings and trained models are preloaded locally.
@@ -862,7 +862,7 @@ This final section ties the layers together as a single system design, described
 
 ### 7.7 Build order (aligned with the PRD)
 
-1. Vertical slice first: ESP32 reading, MQTT, ingestion, storage, forecast, and a changed layer on the 2D map.
+1. Vertical slice first: ESP32 reading, HTTPS ingestion, storage, forecast, and a changed layer on the 2D map.
 2. Then the real-time dashboard, virtual sensors, risk scoring and the timeline control.
 3. Then the what-if simulator and comparison.
 4. Then the 3D twin polish, the alert system and alerts page.

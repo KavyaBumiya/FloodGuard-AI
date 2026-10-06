@@ -39,9 +39,34 @@ async def publish_realtime_event(event: dict) -> None:
 
 # Async Socket.IO server
 _settings = get_settings()
+
+# Horizontal scaling: python-socketio keeps its room membership and its pending
+# emits in process memory unless it is given an external message queue. With
+# more than one uvicorn worker, a client connected to worker B never learns about
+# an event published on worker A, so the console shows a live socket while the
+# charts and alerts silently stop updating. Pointing message_queue at the same
+# Redis the event bridge already uses makes every emit reach every worker.
+# Disabled by setting SOCKETIO_MESSAGE_QUEUE=false when Redis is unavailable.
+_MESSAGE_QUEUE: str | None = None
+if _settings.socketio_message_queue:
+    # python-socketio builds its own client from this URL string, so there is
+    # nothing to connect here — and connecting at import time would block boot.
+    # Validate only that the URL is usable, because a malformed one makes
+    # AsyncServer raise during construction and takes the whole app down.
+    _candidate = (_settings.redis_url or "").strip()
+    if _candidate.startswith(("redis://", "rediss://", "unix://")):
+        _MESSAGE_QUEUE = _candidate
+    else:
+        logger.warning(
+            "socketio_message_queue_invalid_url",
+            redis_url=_settings.redis_url,
+            hint="expected redis://, rediss:// or unix://; running single-worker",
+        )
+
 sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins=_settings.is_origin_allowed,
+    message_queue=_MESSAGE_QUEUE,
     logger=False,
     engineio_logger=False,
 )

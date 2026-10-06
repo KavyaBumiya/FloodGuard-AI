@@ -160,7 +160,7 @@ The team must verify the real board pinout and the sensor module voltage before 
 
 **Sampling and sending.**
 - The device samples every 5 to 10 seconds during testing and demonstration.
-- Each reading is sent to the backend over Wi-Fi (MQTT or HTTP) with the node code, water level, rainfall intensity, a timestamp and the source tag "iot".
+- Each reading is sent to the backend over Wi-Fi as an HTTPS POST with the node code, water level, rainfall intensity, a timestamp and the source tag "iot", authenticated with a per-device bearer token.
 - If Wi-Fi drops, the device keeps measuring and shows readings locally, and sends buffered readings once the connection returns where memory allows.
 
 **Acceptance criteria.**
@@ -278,7 +278,7 @@ INPUT** rather than presenting fallback values as live hardware data.
 **What it is.** The mechanism that pushes new readings, predictions and alerts to the browser instantly, without the user refreshing the page.
 
 **Detailed behaviour.**
-- The ESP32 publishes readings to the backend through MQTT using a clear topic structure (one topic per node for telemetry, one for alerts, one for system status).
+- The ESP32 sends readings to the backend as HTTPS POSTs to a single endpoint (`POST /api/iot/telemetry`), authenticated with a per-device bearer token. Node identity comes from that token, and the `event_id` field makes retries idempotent, so the device can resend safely after a network failure.
 - The backend subscribes to those topics, stores the readings, and forwards updates to the web app through WebSockets (or Server-Sent Events).
 - The frontend reconnects automatically if the connection drops and shows a visible "Reconnecting" indicator while it does.
 - Each node shows a "last updated" time. If a node has not reported within a set period, it is shown as stale or offline.

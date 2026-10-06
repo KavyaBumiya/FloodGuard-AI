@@ -1,4 +1,4 @@
-# FLOODGUARD AI — Project Documentation
+﻿# FLOODGUARD AI — Project Documentation
 
 Complete, file-by-file analysis of this repository. Every statement was verified by reading the
 source, and every number was measured (file contents, raster metadata, NetCDF dimensions, joblib
@@ -17,9 +17,12 @@ elevation-threshold inundation engine turn that into explainable risk scores and
 polygons; a React/Next.js command-centre console renders it on a dashboard, a Leaflet map, a
 three.js twin, a what-if simulator and an alerts page.
 
-Stack: **FastAPI · SQLAlchemy(async) · PostGIS · Redis · Mosquitto · paho-mqtt · NumPy/SciPy/
+Stack: **FastAPI · SQLAlchemy(async) · PostGIS · Redis · NumPy/SciPy/
 rasterio/shapely · scikit-learn/joblib** on the back; **Next.js 16 · React 19 · TypeScript · Redux
 Toolkit · Leaflet · three.js · Recharts · Socket.IO** on the front.
+
+**Telemetry ingress is HTTP-only** — one authenticated HTTPS endpoint, no broker. See
+[`12-REALTIME-AND-ALERTING.md`](docs/12-REALTIME-AND-ALERTING.md) §A.7.
 
 ---
 
@@ -44,7 +47,7 @@ Toolkit · Leaflet · three.js · Recharts · Socket.IO** on the front.
 | 07 | [`MAP-AND-3D-DETAILS`](docs/07-MAP-AND-3D-DETAILS.md) | Deep dive on the Leaflet map and the three.js scene, plus the UI mockups vs the as-built |
 | 11 | [`DATABASE-SCHEMA`](docs/11-DATABASE-SCHEMA.md) | All 16 tables, every column, 21 indexes, both migrations, the FK graph |
 | 10 | [`API-REFERENCE`](docs/10-API-REFERENCE.md) | Every endpoint with parameters and response shapes, plus a smoke-test script |
-| 12 | [`REALTIME-AND-ALERTING`](docs/12-REALTIME-AND-ALERTING.md) | MQTT → Redis → Socket.IO → browser, all 8 events, all 5 alert rules with their config |
+| 12 | [`REALTIME-AND-ALERTING`](docs/12-REALTIME-AND-ALERTING.md) | HTTPS ingress → Redis → Socket.IO → browser, all 8 events, all 5 alert rules with their config |
 
 ### The specific things you asked about
 
@@ -52,9 +55,41 @@ Toolkit · Leaflet · three.js · Recharts · Socket.IO** on the front.
 |---|---|---|
 | 08 | [`DEMO-AND-SIMULATED-DATA`](docs/08-DEMO-AND-SIMULATED-DATA.md) | **Exactly where every simulated / demo / test / orphan dataset is used**, and a table of whether each visible number is real |
 | 09 | [`CONFIGURATION-AND-ENV`](docs/09-CONFIGURATION-AND-ENV.md) | Every `.env` variable, every `Settings` field, both config JSONs, all build configs, and a change-impact table |
-| 13 | [`TESTING-AND-QUALITY`](docs/13-TESTING-AND-QUALITY.md) | The test suites, **live test results**, dead code, and **18 ranked defects** with fixes |
+| 13 | [`TESTING-AND-QUALITY`](docs/13-TESTING-AND-QUALITY.md) | The test suites, **live test results**, dead code, and **20 ranked defects** — 4 now fixed |
 | 14 | [`HONESTY-AND-LIMITATIONS`](docs/14-HONESTY-AND-LIMITATIONS.md) | Every disclaimer in the product, collected verbatim, plus what is *not* disclosed |
 | 15 | [`HOW-TO-RUN`](docs/15-HOW-TO-RUN.md) | Exact commands, plus a troubleshooting table |
+| 16 | [`DEPLOYMENT`](docs/16-DEPLOYMENT.md) | **Part A: Docker on your PC + Cloudflare Tunnel + frontend on Vercel** (verified live). Part B: Render as a managed-PaaS reference |
+
+### Deployment
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | The whole server: PostGIS + Redis + one-shot `migrate` + the `backend` API |
+| `scripts/start-tunnel.ps1` | Opens the Cloudflare Tunnel and prints the exact Vercel env value |
+| `backend/Dockerfile` | Production image |
+| `.dockerignore` | Keeps `backend/.env` out of the image; context 1.14 GB → 98 MB |
+| `backend/scripts/release.py` | Waits for the DB, enables PostGIS, `alembic upgrade head`, optional OSM load |
+| `render.yaml`, `backend/Procfile` | Only for the managed-PaaS path (Part B of `docs/16`) |
+
+```bash
+docker compose up -d --build       # backend live on :8000
+.\scripts\start-tunnel.ps1         # public URL, ready for Vercel
+```
+
+---
+
+## Frontend on Vercel
+
+Vercel serves from the public internet; the API is on your private LAN address, so a tunnel is
+required. Set in Vercel, then **redeploy** (`NEXT_PUBLIC_*` is inlined at build time):
+
+```
+NEXT_PUBLIC_API_BASE=https://<your tunnel url>
+```
+
+Add the Vercel origin to `FRONTEND_ORIGIN` in a root `.env` and `docker compose up -d backend`.
+Full walkthrough, the quick-tunnel URL caveat, and the security implications:
+[`docs/16-DEPLOYMENT.md`](docs/16-DEPLOYMENT.md) Part A.
 
 ---
 
@@ -92,7 +127,8 @@ Toolkit · Leaflet · three.js · Recharts · Socket.IO** on the front.
 9. **The risk engine is rule-based, not ML** — a weighted sum (0.35 / 0.30 / 0.20 / 0.15) over four
    banded inputs, with the primary driver named so nothing is a black box.
 
-10. **There are 18 known defects**, two of them high-impact. The most consequential: the live
+10. **There are 20 catalogued defects, 4 of them now fixed**, two still high-impact. The most
+    consequential: the live
     forecast path passes 10 features to an 11-feature model, so the Random Forest raises, the
     exception is caught, and every live forecast silently degrades to persistence while still
     labelled `FORECAST`. See [`13-TESTING-AND-QUALITY.md`](docs/13-TESTING-AND-QUALITY.md) §5.
@@ -124,21 +160,28 @@ Generated at runtime (never shipped): `telemetry_readings`, `risk_assessments`, 
 
 ## Quick start
 
+The backend runs entirely in Docker — Postgres, Redis, migrations and the API:
+
 ```bash
-docker compose up -d
-
-cd backend
-pip install -r requirements.txt
-alembic upgrade head
-python -m scripts.load_osm_layers
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-cd ../Frontend
-npm install && npm run dev      # http://localhost:3000
+docker compose up -d --build
+curl http://localhost:8000/healthz        # {"status":"ok",...}
 ```
 
-Then register a device and send 8 readings — full script in
-[`15-HOW-TO-RUN.md`](docs/15-HOW-TO-RUN.md) §5.
+Four services start in a guaranteed order: `db` and `redis` must be healthy, then `migrate` runs
+PostGIS + `alembic upgrade head` + the OSM layer load and exits, and only then does `backend` boot.
+Nothing needs to be launched from the host.
+
+Then register a device and send 8 readings over HTTP — full script in
+[`15-HOW-TO-RUN.md`](docs/15-HOW-TO-RUN.md) §5. (8, not 5: forecasts need
+`MIN_READINGS_FOR_FORECAST = max([1,2,3,6]) + 2` readings before they appear.)
+
+The frontend is either run locally, or deployed to Vercel:
+
+```bash
+cd Frontend && npm install && npm run dev   # http://localhost:3000
+```
+
+For Vercel, open the tunnel first and set `NEXT_PUBLIC_API_BASE` — see the Vercel section above.
 
 ---
 
@@ -146,9 +189,15 @@ Then register a device and send 8 readings — full script in
 
 ```
 Frontend   23 tests → 22 pass, 1 fail
-Backend    28 tests → not executed here (1 needs a live PostgreSQL)
+Backend    22 tests → 22 pass  (4 DeprecationWarnings, see below)
+Typecheck  clean
 ```
 
 The one failure is a stale assertion: `constants.test.ts:72` expects
 `SOURCE_META.iot.label === 'LIVE HARDWARE'` but the label is now `'REAL IoT INPUT'`. One-line fix.
 Details in [`13-TESTING-AND-QUALITY.md`](docs/13-TESTING-AND-QUALITY.md) §2.
+
+The four warnings are all from `app/__init__.py:20`:
+`asyncio.WindowsSelectorEventLoopPolicy` and `asyncio.set_event_loop_policy` are deprecated in
+Python 3.14 and slated for removal in 3.16. The policy is still required for `sqlalchemy[asyncio]`
+on Windows, so this is a known forward-compatibility issue, not a defect in the current build.

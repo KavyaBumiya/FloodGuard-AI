@@ -1,0 +1,77 @@
+# FLOODGUARD AI — Docker build context exclusions
+#
+# Resolved relative to the BUILD CONTEXT, which is the repository root
+# (see backend/Dockerfile and render.yaml -> dockerContext: .).
+#
+# This file is the last line of defence for secrets. backend/.env holds a live
+# IOT_REGISTRATION_TOKEN and must never enter an image layer, a build cache or a
+# pushed registry.
+
+# ── Secrets ───────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# ── Version control / CI ──────────────────────────────────────────────
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# ── Python caches ─────────────────────────────────────────────────────
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.venv
+venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# ── Node / Next.js ────────────────────────────────────────────────────
+# The backend image serves no frontend assets, so the whole tree is dead weight.
+Frontend/node_modules
+Frontend/.next
+Frontend/out
+Frontend/.snowflake
+Frontend/.v0-trash
+Frontend/.vercel
+**/node_modules
+**/.next
+**/*.tsbuildinfo
+**/next-env.d.ts
+
+# ── Frontend sources ──────────────────────────────────────────────────
+# Not needed by the API. Delete this block if you later serve the built
+# frontend from the same image.
+Frontend/
+
+# ── Dev-only datasets (≈91 MB) ────────────────────────────────────────
+# Excluded because nothing in the RUNNING service reads them; they are inputs
+# to backend/scripts/preprocess_data.py and train_forecast_models.py, which run
+# on a workstation, not in the container. Still tracked in git, so a clone can
+# regenerate them.
+data/IMD/                        # 3 x ~25 MB national IMD NetCDF — training forcing
+data/ml/                         # 4.7 MB orphaned synthetic CSV (unused)
+data/overpass turbo.geojson      # 8 MB raw OSM extract — preprocess input
+data/terrain/_copernicus_N19E072.tif   # 13 MB 1-degree source tile; the app serves dem_mithi.tif
+data/terrain/sensor_elevations.json    # orphaned
+
+# ── Docs / media ──────────────────────────────────────────────────────
+docs/
+*.pdf
+*.md
+
+# ── Local runtime artefacts ───────────────────────────────────────────
+media/
+.cache/
+*.log
+*.err
+*.out
+**/*.vrt

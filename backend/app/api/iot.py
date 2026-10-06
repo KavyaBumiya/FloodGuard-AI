@@ -1,13 +1,16 @@
 """
 FLOODGUARD AI — IoT Telemetry API
-==================================
-Normalized ingestion, latest-reading, history, and device management for
-flood-monitoring devices. Accepts both real device telemetry (source="iot")
-and simulated data (source="simulated") so the frontend's Sim mode and Live
-mode share one pipeline.
+=================================
+The single telemetry ingress for the whole system. Hardware posts here over
+HTTPS; there is no broker and no second wire protocol.
+
+Normalised ingestion, latest-reading, history, and device management. Every
+accepted reading continues into the same pipeline regardless of whether it came
+from the physical station or from Replay mode, so the console's Live and Sim
+modes share one code path.
 
 Authentication: devices present `Authorization: Bearer <token>` obtained from
-POST /api/iot/v1/devices/register. That endpoint is gated by the
+POST /api/iot/devices/register. That endpoint is gated by the
 IOT_REGISTRATION_TOKEN bootstrap secret.
 
 Units:
@@ -21,13 +24,12 @@ Units:
 """
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
@@ -41,13 +43,11 @@ from app.core.database import get_db
 from app.models.floodguard import (
     SensorNode,
     TelemetryReading,
-    RejectedReading,
-    SourceType,
-    NodeType,
 )
+from app.services import rate_limit
+from app.services.ingest import TelemetryRejected, ingest_payload
 from app.services.telemetry import (
     get_latest_reading,
-    ingest_telemetry_reading,
     is_recent_physical_reading,
 )
 
@@ -65,6 +65,9 @@ logger = structlog.get_logger()
 
 class DeviceRegisterRequest(BaseModel):
     node_code: str = Field(..., min_length=1, max_length=32)
+    # sensor_nodes.name is NOT NULL. Defaulting to the node code keeps the
+    # documented curl (which omits `name`) working instead of raising a 500 on
+    # a NOT NULL violation.
     name: str | None = Field(None, max_length=120)
     node_type: str = Field("physical", pattern="^(physical|virtual)$")
     role: str | None = Field(None, pattern="^(upstream|midstream|downstream)$")
@@ -166,7 +169,7 @@ class DeviceResponse(BaseModel):
 class RegisterResponse(BaseModel):
     node_code: str
     token: str
-    name: str | None
+    name: str
     status: str
 
 
@@ -199,9 +202,12 @@ async def register_device(
         raise HTTPException(status_code=409, detail="node_code already registered")
 
     token = generate_device_token()
+    # `name` is NOT NULL in the schema but optional in the request, so fall
+    # back to the node code rather than handing NULL to Postgres.
+    display_name = (body.name or "").strip() or body.node_code.upper()
     node = SensorNode(
         node_code=body.node_code.upper(),
-        name=body.name,
+        name=display_name,
         node_type=body.node_type,
         role=body.role,
         reference_elevation_m=body.reference_elevation_m,
@@ -303,11 +309,23 @@ async def ingest_telemetry(
     device: SensorNode = Depends(get_current_device),
     db: AsyncSession = Depends(get_db),
 ):
-    """Accept one normalized flood reading from an authenticated device.
+    """Accept one telemetry reading over HTTPS. The only wire protocol.
 
-    Idempotent on `event_id`: a device that retries after a timeout gets 200
-    with the original record rather than a duplicate row.
+    Idempotent on `event_id`: a device that retries after a timeout or a cold
+    start gets the original record back rather than a duplicate row.
+
+    Rejections are written to `rejected_readings` before the 400 is returned, so
+    a misbehaving device is auditable and eventually trips the sensor-fault
+    alert (3 rejections within an hour).
+
+    Throttled per device at `IOT_TELEMETRY_RATE_LIMIT_PER_MINUTE` (default 12,
+    i.e. a 5 s cadence). Exceeding it returns 429 with `Retry-After`. The check
+    runs before validation so a flood of malformed bodies is also bounded.
     """
+    rate_limit.enforce(
+        device.node_code, get_settings().iot_telemetry_rate_limit_per_minute
+    )
+
     # The path is authenticated by token; the body's node_code must match.
     if body.node_code.upper() != device.node_code:
         raise HTTPException(
@@ -315,73 +333,28 @@ async def ingest_telemetry(
             detail="node_code in body does not match the authenticated device",
         )
 
-    # Validate sensor reported valid
-    if not body.valid:
-        # Store as rejected
-        rejected = RejectedReading(
-            node_code=device.node_code,
-            raw_payload=body.model_dump(),
-            reject_reason="Sensor reported invalid reading (valid=false)",
-        )
-        db.add(rejected)
-        await db.commit()
-        raise HTTPException(status_code=400, detail="Sensor reported invalid reading")
-
-    # Idempotency: if this event_id was already stored, return it.
-    if body.event_id:
-        existing = (
-            await db.execute(
-                select(TelemetryReading)
-                .where(
-                    TelemetryReading.node_id == device.id,
-                    TelemetryReading.event_id == body.event_id,
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return TelemetryResponse(
-                id=existing.id,
-                node_code=device.node_code,
-                status="duplicate",
-                risk_level=existing.risk_level,
-                risk_score=existing.risk_score,
-                received_at=existing.received_at.isoformat() if existing.received_at else "",
-            )
-
-    ts = datetime.fromisoformat(body.timestamp.replace("Z", "+00:00"))
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-
-    # Shared pipeline: rise rate, risk snapshot, TelemetryReading +
-    # RiskAssessment, node freshness, one realtime envelope.
-    if body.lat is not None and body.lng is not None:
-        device.location = f"POINT({body.lng} {body.lat})"
-        await db.commit()
-
-    telemetry, risk = await ingest_telemetry_reading(
-        db,
-        device,
-        timestamp=ts,
-        water_level_cm=body.water_level_cm,
-        rainfall_mm_hr=body.rainfall_mm_hr,
-        flow_rate=body.flow_rate,
-        soil_moisture=body.soil_moisture,
-        battery_voltage=body.battery_voltage,
-        source=body.source,
-        event_id=body.event_id,
-    )
-
+    try:
+        # `source` is accepted on the wire for schema compatibility with the
+        # replay payloads, but a device presenting a valid bearer token *is*
+        # live hardware. Pinning it here stops a device from claiming
+        # "simulated"/"replay", which would flip data_mode and pollute the
+        # demo and replay bookkeeping. Replay calls ingest_payload() directly
+        # and is unaffected.
+        payload = {**body.model_dump(), "source": "iot"}
+        outcome = await ingest_payload(db, payload, node=device)
+    except TelemetryRejected as exc:
+        logger.warning("telemetry_rejected_http", node_code=device.node_code, reason=exc.reason)
+        raise HTTPException(status_code=400, detail=exc.reason)
 
     return TelemetryResponse(
-        id=telemetry.id,
+        id=outcome.reading.id,
         node_code=device.node_code,
-        status="accepted",
-        risk_level=getattr(risk, "risk_level", None),
-        risk_score=getattr(risk, "risk_score", None),
+        status=outcome.status,
+        risk_level=_norm_risk(outcome.reading.risk_level),
+        risk_score=outcome.reading.risk_score,
         received_at=(
-            telemetry.received_at.isoformat()
-            if telemetry.received_at
+            outcome.reading.received_at.isoformat()
+            if outcome.reading.received_at
             else datetime.now(timezone.utc).isoformat()
         ),
     )

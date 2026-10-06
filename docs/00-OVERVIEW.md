@@ -18,7 +18,7 @@ It is a hackathon build (IIT Bombay, 36–48 h target, per `PRD.md`). The produc
 The intended product shape is:
 
 1. A **real ESP32 hardware sensor** measures water level + rainfall in a miniature channel.
-2. The reading is ingested by a Python backend (REST or MQTT).
+2. The reading is ingested by a Python backend over HTTPS.
 3. A **trained ML model** predicts water level at +15, +30 and +60 minutes.
 4. A **rule-based risk engine** converts readings/forecasts into an explainable risk score.
 5. A **flood simulation engine** turns predicted water level into a GeoJSON inundation polygon set on a
@@ -103,13 +103,13 @@ React Router, Vite.
 | Settings | `pydantic` ≥2.7, `pydantic-settings` ≥2.3, `python-dotenv` |
 | DB | `sqlalchemy` ≥2.0.30, `asyncpg`, `alembic` ≥1.13, `geoalchemy2` ≥0.15 |
 | Cache/bus | `redis` ≥5.0 |
-| IoT | `paho-mqtt` ≥2.0 |
+| IoT | *(none - ingress is plain HTTPS)* |
 | HTTP | `httpx` ≥0.27 |
 | Geo/terrain | `numpy` ≥1.26, `scipy` ≥1.11, `rasterio` ≥1.3, `shapely` ≥2.0, `netCDF4` ≥1.6 |
 | ML | `scikit-learn` ≥1.3, `joblib` ≥1.3 |
 | Logging | `structlog` ≥24.1 |
 
-**Not present:** pandas, geopandas, matplotlib, tensorflow, xgboost, APScheduler, aiomqtt.
+**Not present:** pandas, geopandas, matplotlib, tensorflow, xgboost, APScheduler.
 There is **no** LSTM and **no** XGBoost anywhere in the shipped build.
 
 ### Infrastructure — `docker-compose.yml`
@@ -118,10 +118,9 @@ There is **no** LSTM and **no** XGBoost anywhere in the shipped build.
 |---|---|---|
 | `db` | `postgis/postgis:16-3.4` (user/pass/db all `floodguard`) | 5432 |
 | `redis` | `redis:7-alpine` | 6379 |
-| `mqtt` | `eclipse-mosquitto:2` | 1883 (MQTT), 9001 (WebSocket) |
 
-MQTT config is mounted from `backend/deploy/mosquitto/mosquitto.conf` — anonymous access on, no
-persistence.
+Telemetry ingress is plain HTTPS (`POST /api/iot/telemetry`), so there is no broker service, no port
+to expose, and nothing that can be down at demonstration time.
 
 ---
 
@@ -132,7 +131,7 @@ persistence.
 | 1 | **Offline data prep** | `backend/scripts/preprocess_data.py` | `data/osm/*.geojson`, `data/rainfall/imd/processed/mumbai_rainfall.json` |
 | 2 | **Geo load** | `backend/scripts/load_osm_layers.py` | PostGIS `roads` + `buildings` tables |
 | 3 | **ML training** | `backend/scripts/train_forecast_models.py` | `models/flood/rf_{15,30,60}min.joblib` + `model_metadata.json` + `model_registry` rows |
-| 4 | **Live telemetry → prediction → inundation** | `POST /api/iot/telemetry` or MQTT → `telemetry.py` → `forecast_service` → `mithi_demo_pipeline` → `flood_simulation` → `alert_engine` → Redis → Socket.IO → browser | `telemetry_readings`, `forecasts`, `risk_assessments`, `flood_layers`, `flood_impacts`, `alerts` |
+| 4 | **Live telemetry → prediction → inundation** | `POST /api/iot/telemetry` (HTTPS) → `telemetry.py` → `forecast_service` → `mithi_demo_pipeline` → `flood_simulation` → `alert_engine` → Redis → Socket.IO → browser | `telemetry_readings`, `forecasts`, `risk_assessments`, `flood_layers`, `flood_impacts`, `alerts` |
 | 5 | **What-if scenario** | `POST /api/scenarios/run` | `scenarios` + `forecasts` + `risk_assessments` + `flood_layers` for that scenario_id |
 
 Each is documented in detail in [`04-DATA-PIPELINES.md`](04-DATA-PIPELINES.md).
@@ -172,7 +171,7 @@ Detail: [`05-ALGORITHMS-AND-AI-ML.md`](05-ALGORITHMS-AND-AI-ML.md).
 | `09-CONFIGURATION-AND-ENV.md` | Every `.env` variable, every Settings field, both config JSONs |
 | `10-API-REFERENCE.md` | Every endpoint, parameters, response shapes |
 | `11-DATABASE-SCHEMA.md` | All 16 tables, columns, indexes, migrations |
-| `12-REALTIME-AND-ALERTING.md` | MQTT, Redis, Socket.IO, all 5 alert rules |
+| `12-REALTIME-AND-ALERTING.md` | HTTP ingress, Redis, Socket.IO, all 5 alert rules |
 | `13-TESTING-AND-QUALITY.md` | Test suite, live test results, dead code, defects found |
 | `14-HONESTY-AND-LIMITATIONS.md` | Every disclaimer in the product, collected |
 | `15-HOW-TO-RUN.md` | Exact commands to bring the whole stack up |

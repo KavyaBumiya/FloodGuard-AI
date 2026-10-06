@@ -194,7 +194,7 @@ to simulated` · `degraded is distinct from offline` · `alert severities sort m
 | `ndimage` (scipy) | `flood_simulation.py:22` | imported, never used |
 | `SourceType`, `Scenario`, `Forecast` | `flood_simulation.py:32,37,33` | imported, unused |
 | `logging`, `fileConfig` | `alert_engine.py:18` | unused imports |
-| `forecast` param | `mqtt_ingestion.py:216` | passed but unused in `_process_telemetry` |
+| `forecast` param | `ingest.py` | accepted for call-site compatibility, unused |
 | `RISK_ASSUMPTIONS` config key `defaults.forecast_weights` | `risk_thresholds.json:43-47` | keys are `persistence`/`linear_regression`/`random_forest`; the code wants `forecast_rainfall`/`current_risk` → both fall back to hard-coded defaults |
 | `thresholds.forecast_rainfall_mm_hr` | absent from the config | `flood_risk.py:73-76` falls back to 5/15/35/60 |
 | `defaults.soil_saturation` / `soil_available` | absent from the config | fall back to 0.4 / False |
@@ -331,24 +331,36 @@ reads "just now" forever.
 
 **Fix:** clear at `level < warning_thresh - HYSTERESIS["water_level_cm"]`.
 
-### 5.6 🟠 MEDIUM — `sensor_nodes.name` is NOT NULL but the API allows NULL
+### 5.6 ✅ FIXED — `sensor_nodes.name` is NOT NULL but the API allowed NULL
 
 DDL: `sa.Column('name', sa.String(length=120), nullable=False)`.
 API: `DeviceRegisterRequest.name: str | None = Field(None, max_length=120)`.
-`register_device` passes `name=body.name` straight through.
+`register_device` passed `name=body.name` straight through.
 
-Registering without `name` → `IntegrityError` → 500, not a clean 422.
+Registering without `name` → `IntegrityError` → **500**, not a clean 422. This was a *deployment
+blocker*: on a fresh Render database, following the documented curl (which omits `name`) made
+registering the ESP32 impossible.
 
-**Fix:** either make the column nullable or default the name to the node code.
+**Fixed** by defaulting the name to the uppercased `node_code`, matching the docstring's suggestion
+over making the column nullable — the console wants a human-readable label, and the node code is a
+better one than blank. `RegisterResponse.name` was tightened from `str | None` to `str` to match.
+
+Verified in the container: `POST /api/iot/devices/register` with no `name` → **201**
+`{"node_code":"SMK-6903","name":"SMK-6903","token":"…","status":"active"}`.
 
 ### 5.7 🟠 MEDIUM — `.env` DB password disagrees with `docker-compose.yml`
 
 `.env` → `postgresql+asyncpg://floodguard:floodguard@localhost:5432/floodguard`
-`docker-compose.yml:7` → `POSTGRES_PASSWORD: floodguard_secret`
+`docker-compose.yml:7` → `POSTGRES_PASSWORD: floodguard_secret` (since changed)
 
-The app will fail to authenticate against the compose database. `.env.example` has it right
-(`floodguard_secret`); `backend/.env` is the odd one out — as are `alembic.ini:4` and
-`config.py:37`, which both use `floodguard`.
+The app failed to authenticate against a freshly-created compose database: `.env`, `alembic.ini:4`
+and `config.py:37` used `floodguard`, while `docker-compose.yml` and `.env.example` used
+`floodguard_secret`.
+
+**Fixed** by aligning `docker-compose.yml` and `.env.example` on `floodguard` — which is what the
+`pgdata` volume actually holds and what `alembic.ini` already used. A fresh clone now connects
+with no edits. Residual caveat: a pre-existing volume keeps its original password until
+`docker compose down -v`.
 
 ### 5.8 🟡 LOW — `GET /api/iot/devices` uses the broken geometry descriptor
 
@@ -432,6 +444,41 @@ user editing `.env` would not discover the knobs.
 
 Emitted by `mithi_demo_pipeline.py:92`, subscribed in `useFloodguard.ts:16`, but absent from the
 union in `lib/socket.ts:14-21`.
+
+### 5.19 ✅ FIXED — the telemetry rate limit was declared but never enforced
+
+`iot_telemetry_rate_limit_per_minute` existed in `Settings` and was set to `12` in `render.yaml`,
+but a repo-wide search found **no reader**. It advertised a protection that did not exist, on the
+one endpoint that is publicly reachable and expensive to serve (four flood simulations per
+accepted reading).
+
+**Fixed** by adding `app/services/rate_limit.py`: a per-device sliding window over
+`time.monotonic()`, returning `429` with a `Retry-After` header, plus a sweep so retired node codes
+cannot leak deques. `reset()` exists for tests.
+
+Verified in the container: 16 rapid POSTs produced `201` ×12 then `429` ×4.
+
+Two properties to keep in mind:
+
+- Counters are **per-process**. Exact at the documented single worker; the allowance multiplies if
+  `--workers` is raised. Move to Redis before scaling out.
+- It runs *inside* the endpoint, after the auth dependency, so `401`s are not counted. That is
+  deliberate — a rejected token does no database or simulation work, so there is nothing to bound.
+
+### 5.20 ✅ FIXED — a device could claim any `source`, poisoning replay bookkeeping
+
+`TelemetryRequest.source` was accepted from the wire with no constraint, and `ingest_payload()`
+trusted it. A device holding a valid bearer token could POST `"source": "replay"` or
+`"simulated"`, which flips `data_mode`, suppresses the live Mithi demo pipeline, and lets the
+reading reach the replay/demo accounting as if it were not live hardware. `docs/12` §A.7 already
+claimed the server pinned this; the code did not.
+
+**Fixed** by pinning `source` to `"iot"` in `register`/`ingest` on the HTTP path. Replay calls
+`ingest_payload()` directly and is unaffected, so `simulated`/`scenario`/`replay` still work where
+they belong.
+
+Verified in the container: a POST with `"source":"replay"` returned `201 accepted`, and the stored
+row's `source` column is `iot`.
 
 ---
 

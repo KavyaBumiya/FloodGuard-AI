@@ -5,8 +5,8 @@ Owns the FastAPI app, the Socket.IO ASGI mount, the Redis -> Socket.IO event
 bridge, and the startup/shutdown lifecycle for the ingest + forecast + alert
 engines.
 
-Everything degrades rather than crashes: if Redis or MQTT is down the API
-still serves, MQTT ingestion simply logs that it is disconnected.
+Everything degrades rather than crashes: if Redis or the database is down the
+API still serves and the browser falls back to REST polling.
 """
 from __future__ import annotations
 
@@ -66,15 +66,11 @@ async def _start_engines() -> None:
     stop telemetry from being ingested."""
     from app.services.alert_engine import alert_engine
     from app.services.forecast_service import forecast_service
-    from app.services.mqtt_ingestion import mqtt_ingestion
 
-    starters = []
-    if settings.mqtt_enabled:
-        starters.append(("mqtt_ingestion", mqtt_ingestion.start))
-    starters.extend((
+    starters = [
         ("forecast_service", forecast_service.start_auto_forecast),
         ("alert_engine", alert_engine.start),
-    ))
+    ]
     for name, start in starters:
         try:
             result = start()
@@ -88,10 +84,8 @@ async def _start_engines() -> None:
 async def _stop_engines() -> None:
     from app.services.alert_engine import alert_engine
     from app.services.forecast_service import forecast_service
-    from app.services.mqtt_ingestion import mqtt_ingestion
 
     for name, stop in (
-        ("mqtt_ingestion", mqtt_ingestion.stop),
         ("forecast_service", forecast_service.stop_auto_forecast),
         ("alert_engine", alert_engine.stop),
     ):
@@ -120,7 +114,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("event_bridge_unavailable", error=str(exc))
 
     await _start_engines()
-    logger.info("floodguard_started", env=settings.app_env, mqtt=settings.mqtt_enabled)
+    logger.info("floodguard_started", env=settings.app_env)
     try:
         yield
     finally:
@@ -151,6 +145,21 @@ app.add_middleware(
 )
 
 
+@app.get("/healthz", tags=["system"])
+async def healthz() -> dict[str, Any]:
+    """Liveness only: the process is up and the event loop is turning.
+
+    Deliberately touches no dependency. Render polls this every few seconds to
+    decide whether to route traffic here, so it must not inherit the latency of
+    a third-party API — `/health` below probes Open-Meteo over a 20 s httpx
+    timeout, and a slow upstream would have the platform kill a perfectly
+    healthy instance.
+
+    Never raises.
+    """
+    return {"status": "ok", "service": "floodguard-ai", "version": "1.0.0"}
+
+
 @app.get("/health", tags=["system"])
 @app.get("/api/health", tags=["system"])
 async def health() -> dict[str, Any]:
@@ -174,7 +183,7 @@ async def health() -> dict[str, Any]:
         status["status"] = "degraded"
         status["redis"] = f"error: {type(exc).__name__}"
 
-    status["mqtt"] = "enabled" if settings.mqtt_enabled else "disabled"
+    status["ingest"] = "http"
     try:
         from app.integrations.weather.open_meteo import probe
 

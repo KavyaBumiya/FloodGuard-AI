@@ -295,14 +295,14 @@ This is the demo-critical path.
 
 ```
                     ┌────────────────────────────────────────────────────────────────────┐
- ESP32              │  hardware: publish JSON on MQTT floodguard/nodes/<code>/telemetry   │
+ ESP32              │  hardware: POST JSON to /api/iot/telemetry (HTTPS + bearer token)    │
  (or curl)  ────────┤           OR POST http://<host>:8000/api/iot/telemetry             │
                     └────────────────────────────────────────────────────────────────────┘
                                         │
         ┌───────────────────────────────┴───────────────────────────────┐
         │                                                               │
-   MQTT path                                                     HTTP path
- mqtt_ingestion.py:122 on_message                         iot.py:300 ingest_telemetry
+   HTTPS path
+ api/iot.py (Pydantic) → services/ingest.py → telemetry.ingest_telemetry
    ├─ json.loads                                          ├─ get_current_device (bearer → SHA-256 lookup)
    ├─ topic_parts[-2] = node_code                         ├─ 403 if body.node_code != device
    ├─ _get_or_create_node                                 ├─ valid==False → RejectedReading + 400
@@ -428,7 +428,7 @@ This is the demo-critical path.
 |---|---|---|
 | `forecast_service._auto_forecast_loop` | 60 s | `generate_all_forecasts()` — same mapped-level forecast path as (c) above, for every active physical node |
 | `alert_engine._run` | 30 s | `evaluate_all()` — 5 rules per node (see `12-REALTIME-AND-ALERTING.md`) |
-| `mqtt_ingestion` | event | inbound telemetry |
+| `api/iot.py` + `ingest` | request | inbound telemetry over HTTPS |
 | Frontend `useFloodguard` poll | 3 s | REST safety net |
 | Frontend `useNodeSeries` poll | 3 s | per-node history + forecasts |
 | Frontend `FloodMap` polls | 3 s each | study area, waterways, buildings, roads, inundation layer |
@@ -535,7 +535,7 @@ POST /api/demo/replay/{id}/start?speed=1.0
         delay = (t[i] - t[i-1]).total_seconds() / speed ;  await sleep(delay)
         reading["source"]    = "replay"
         reading["data_mode"] = "replay"
-        mqtt_ingestion._process_telemetry(node_code, reading)   ← same pipeline as live MQTT
+        ingest.ingest_payload(reading)                           ← same pipeline as live HTTPS
    → on completion: mode = "live"
 ```
 

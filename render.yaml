@@ -1,0 +1,109 @@
+# FLOODGUARD AI — Render Blueprint
+#
+#   render blueprint launch     # from the repo root, or paste this file into
+#                               # Render -> New -> Blueprint
+#
+# Creates three managed resources and wires them together:
+#   floodguard-api    web service   Docker image built from backend/Dockerfile
+#   floodguard-db     Postgres 16   (PostGIS extension enabled by scripts/release.py)
+#   floodguard-redis  Key Value     cache + Socket.IO message queue + event bus
+#
+# Telemetry ingress is HTTPS only: the ESP32 POSTs to /api/iot/telemetry with a
+# per-device bearer token. No broker is declared because none is needed — which
+# also sidesteps Render's lack of inbound ports entirely.
+#
+# Secrets that MUST be supplied by hand (no value here on purpose):
+#   IOT_REGISTRATION_TOKEN   gates device registration — see .env.example
+
+databases:
+  - type: postgres
+    name: floodguard-db
+    plan: basic-256mb
+    postgresMajorVersion: "16"
+    region: oregon
+    ipAllowList: []          # reachable only from inside Render
+
+services:
+  # ── API ────────────────────────────────────────────────────────────────
+  - type: web
+    name: floodguard-api
+    runtime: docker
+    plan: starter            # 'free' spins down after inactivity, which stalls
+                             # the 30 s alert engine and the 60 s forecast loop
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .         # repo root: the app resolves datasets against it
+
+    healthCheckPath: /healthz # liveness only — see docs/16-DEPLOY-RENDER.md §4
+    autoDeploy: true
+
+    # Runs once before the new image takes traffic, so Alembic never races the
+    # outgoing instances. Equivalent: `python -m scripts.release`
+    releaseCommand: python -m scripts.release
+
+    envVars:
+      # ── Managed services ────────────────────────────────────────────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: floodguard-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: floodguard-redis
+          property: connectionString
+
+      # ── App ─────────────────────────────────────────────────────────────
+      # asyncpg + ssl=require are applied automatically by Settings.database_dsn
+      - key: APP_ENV
+        value: production
+      # Allow any browser origin. Tighten to your frontend host before going live.
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: FRONTEND_ORIGIN_REGEX
+        sync: false
+
+      # ── Telemetry ───────────────────────────────────────────────────────
+      # HTTP only. The ESP32 POSTs to /api/iot/telemetry with its bearer
+      # token; nothing needs to be reachable inbound.
+
+      # ── Device auth ─────────────────────────────────────────────────────
+      # Required to register the ESP32. Read it from the Render dashboard.
+      - key: IOT_REGISTRATION_TOKEN
+        generateValue: true
+      - key: IOT_TELEMETRY_RATE_LIMIT_PER_MINUTE
+        value: "12"
+
+      # ── Behaviour ───────────────────────────────────────────────────────
+      # Safety valve on substituting fabricated elevation. Leave false: the flood
+      # engine should fail loudly rather than report SIMULATED inundation.
+      - key: ALLOW_SYNTHETIC_TERRAIN
+        value: "false"
+      # Local WALKS off when Redis is reachable; nothing to configure otherwise.
+      - key: SOCKETIO_MESSAGE_QUEUE
+        value: "true"
+      - key: DEMO_MODE_ENABLED
+        value: "false"
+
+      # ── Release ─────────────────────────────────────────────────────────
+      - key: RELEASE_DB_WAIT_ATTEMPTS
+        value: "30"
+      - key: RELEASE_LOAD_OSM
+        value: "false"        # set true for the FIRST deploy on a fresh database
+
+      # ── Optional integrations (unused by the core product) ─────────────
+      - key: OPENTOPOGRAPHY_API_KEY
+        sync: false
+      - key: CESIUM_ION_TOKEN
+        sync: false
+      - key: OPEN_METEO_API_BASE
+        value: https://api.open-meteo.com/v1
+
+  # ── Redis ──────────────────────────────────────────────────────────────
+  - type: keyvalue
+    name: floodguard-redis
+    plan: starter
+    region: oregon
+    # Blanket access: the API reaches this over Render's private network, but
+    # the external connection string is useful for local `redis-cli` debugging.
+    ipAllowList: []

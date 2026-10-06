@@ -14,7 +14,12 @@ pydantic-settings>=2.3
 python-dotenv>=1.0
 
 # Database
-sqlalchemy>=2.0.30
+# The [asyncio] extra is REQUIRED, not cosmetic: it pulls in greenlet, which
+# SQLAlchemy's asyncio module imports at `import sqlalchemy.ext.asyncio`. It
+# happens to be satisfied on Python 3.14 by another transitive dependency, so
+# the omission is invisible locally and only breaks on a clean 3.13 image —
+# which is exactly what the Render Dockerfile builds.
+sqlalchemy[asyncio]>=2.0.30
 asyncpg>=0.29
 alembic>=1.13
 geoalchemy2>=0.15
@@ -23,7 +28,10 @@ geoalchemy2>=0.15
 redis>=5.0
 
 # IoT telemetry ingress
-paho-mqtt>=2.0
+# HTTP only. There is no broker: the ESP32 POSTs to /api/iot/telemetry over
+# HTTPS with a bearer token. A message broker is not required for a single
+# device posting every ~10 s, and removing it means one less third-party
+# service that can be down during a live demonstration.
 
 # HTTP client
 httpx>=0.27

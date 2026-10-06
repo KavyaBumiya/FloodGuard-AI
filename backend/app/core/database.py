@@ -13,11 +13,17 @@ from app.core.config import get_settings
 settings = get_settings()
 
 engine = create_async_engine(
-    settings.database_url,
+    # `database_dsn`, not `database_url`: it carries the asyncpg scheme and the
+    # ssl=require flag decided by Settings, so the managed-Postgres URL Render
+    # injects connects without any per-consumer patching.
+    settings.database_dsn,
     echo=False,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
+    # Managed Postgres closes idle connections aggressively; without this a
+    # burst after an idle spin-down returns "connection has been closed".
+    pool_recycle=1800,
 )
 
 AsyncSessionLocal = async_sessionmaker(

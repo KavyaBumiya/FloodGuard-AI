@@ -11,7 +11,7 @@ All paths relative to `D:\Projects\Flood-Monitoring-System`.
 | `PRD.md` | 41,377 B / 692 lines | Product Requirements Document. Defines 20 numbered features, study area, hardware plan, honesty principles. **Written before the code — several proposed technologies were not built.** |
 | `System-Architecture.md` | 48,280 B / 878 lines | Proposed layer-by-layer design: frontend, backend, AI/ML, IoT, data sources, 16-table schema, end-to-end demo flow. **Design intent, not as-built.** |
 | `FLOODGUARD_AI_UI_Mockups.pdf` | 115,270 B / 7 pages | ReportLab-generated design mockups for all 7 screens. Contains **sample/illustrative numbers only** (each page footer states "All values are sample data for illustration"). Full text is transcribed in [`07-MAP-AND-3D-DETAILS.md`](07-MAP-AND-3D-DETAILS.md). |
-| `docker-compose.yml` | 52 lines | PostGIS + Redis + Mosquitto. See `00-OVERVIEW.md` §3. |
+| `docker-compose.yml` | 115 lines | The whole server: PostGIS + Redis + a one-shot `migrate` + the `backend` API. See `15-HOW-TO-RUN.md` §1. |
 | `.gitignore` | 44 lines | Ignores `.env` (except `.env.example`), Python caches, `node_modules`, `.next`, `*.tsbuildinfo`, `data/terrain/*.vrt`, `data/processed/`, and `backend/app/ml/artifacts/*.joblib` (a path that does not exist — models actually live in `models/flood/`). |
 | `.vscode/settings.json` | 3 lines | `python-envs.defaultEnvManager: ms-python.python:system` |
 
@@ -61,8 +61,9 @@ Excludes `.env`, caches, VCS dirs, `media/`, `*.log` from any Docker build conte
 
 ### `backend/app/__init__.py` (16 lines)
 **Windows-only event-loop policy fix.** Lines 13-16 force
-`asyncio.WindowsSelectorEventLoopPolicy()` on `win32`, because paho-mqtt owns its own socket thread
-and `loop.add_writer` (used by aiomqtt-style transports) is not implemented on ProactorEventLoop.
+`asyncio.WindowsSelectorEventLoopPolicy()` on `win32`. This was originally for paho-mqtt's socket
+thread and is now **kept deliberately**: `sqlalchemy[asyncio]` and `aiosqlite` drive their greenlet
+work through the loop's self-pipe, which only the selector loop implements on Windows.
 This runs at package import, before uvicorn calls `asyncio.run()`.
 
 ---
@@ -123,7 +124,8 @@ DDL produced by the migration. Columns are plain `String(n)` / `Float`.
 | `flood_simulation.py` | 897 | The elevation-threshold inundation engine: terrain load, river centreline, water-surface interpolation, depth, connectivity mask, risk classification, vectorisation, PostGIS impact intersection, layer persistence. |
 | `alert_engine.py` | 1121 | 5 alert rules + dedup + hysteresis + auto-clear + acknowledge + realtime. |
 | `mithi_demo_pipeline.py` | 105 | Called after every `iot` reading. Finds the newest physical reading, maps it to the Mithi level, generates Mithi forecasts, runs the flood simulation at 0/15/30/60, persists all layers, publishes `flood.mithi.updated`. |
-| `mqtt_ingestion.py` | 344 | paho subscriber on `<prefix>/nodes/+/telemetry`, with payload validation, node auto-create for non-`iot` sources, and `RejectedReading` audit logging. |
+| `ingest.py` | ~150 | Transport-neutral `ingest_payload()`: payload validation, node resolution, `RejectedReading` audit logging and `event_id` idempotency. Shared by `api/iot.py` (HTTPS) and demo Replay mode. |
+| `rate_limit.py` | ~75 | Per-device sliding-window limit for `POST /api/iot/telemetry`, driven by `iot_telemetry_rate_limit_per_minute` (default 12/min). Raises `429` with `Retry-After`. In-process, so exact only at one uvicorn worker; `reset()` exists for tests. |
 | `virtual_sensors.py` | 500 | Simulated-node generator with delay+attenuation propagation. **Instantiated but never started** — see `13-TESTING-AND-QUALITY.md`. |
 | `scenario_service.py` | 407 | What-if scenario creation, background execution, baseline comparison, presets, assumptions. |
 | `demo_controller.py` | 290 | Mode switching (live/replay/scenario), replay playback, full demo reset, recording capture. |

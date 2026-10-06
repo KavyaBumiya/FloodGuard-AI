@@ -282,7 +282,8 @@ export interface HealthStatus {
   version?: string
   database?: string
   redis?: string
-  mqtt?: string
+  /** Telemetry transport. Always `http` — there is no broker. */
+  ingest?: string
   open_meteo?: string
 }
 

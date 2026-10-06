@@ -30,7 +30,7 @@ the enum**: `"iot-demo"`. That is what the mapped Mithi state is stored under.
 | Path | Code |
 |---|---|
 | HTTP POST | `POST /api/iot/telemetry` — `backend/app/api/iot.py:300` |
-| MQTT | `floodguard/nodes/<node_code>/telemetry` — `backend/app/services/mqtt_ingestion.py:115` |
+| HTTPS | `POST /api/iot/telemetry` — `backend/app/api/iot.py` → `backend/app/services/ingest.py` |
 
 Both converge on `telemetry.ingest_telemetry_reading()` (`telemetry.py:68`).
 
@@ -162,8 +162,6 @@ simulated network with delay+attenuation propagation. **It is not running.**
 `main._start_engines()` (`main.py:71-77`) starts exactly:
 
 ```python
-if settings.mqtt_enabled:
-    starters.append(("mqtt_ingestion", mqtt_ingestion.start))
 starters.extend((
     ("forecast_service", forecast_service.start_auto_forecast),
     ("alert_engine", alert_engine.start),
@@ -254,7 +252,7 @@ Scenario contamination is prevented by every read path filtering `scenario_id IS
 | `replay_recordings` table | empty on a fresh DB (nothing seeds it) |
 | `POST /api/demo/seed` | **no-op** — logs `demo_seed_skipped`, reason `live_input_requires_registered_esp32` |
 | `POST /api/demo/recordings?name=X&duration_seconds=300` | captures real telemetry → works once a device has been sending |
-| `POST /api/demo/replay/{id}/start?speed=1.0` | replays, re-tagging each reading `source="replay"`, `data_mode="replay"`, through `mqtt_ingestion._process_telemetry` — **the same pipeline as live MQTT** |
+| `POST /api/demo/replay/{id}/start?speed=1.0` | replays, re-tagging each reading `source="replay"`, `data_mode="replay"`, through `ingest.ingest_payload()` — **the same pipeline as live HTTPS** |
 | UI | `/api/demo/status` sets `mode`, which the `Shell` renders as the amber `REPLAY — Recorded data being replayed — not live conditions.` strip |
 
 `DEMO_MODE_ENABLED=true` and `DEMO_REPLAY_SPEED=1.0` exist in `.env` but `demo_mode_enabled` and
@@ -337,7 +335,7 @@ prototype data cannot establish real-world accuracy."* Page 5 runoff coefficient
 | `data/terrain/_copernicus_N19E072.tif` | 13 MB | Intermediate download; `preprocess_data.py` explicitly skips `_`-prefixed files. |
 | `config/virtual_sensors.json` | — | Loaded by `virtual_sensors.py`, which is not started. |
 | 5 `Frontend/public/placeholder*` files | — | Unreferenced Next.js/v0 template leftovers. |
-| `frontend_origin_regex`, `mqtt_username/password` | empty | Present and wired, no values set. |
+| `frontend_origin_regex` | empty | Present and wired, no value set. |
 
 ---
 
@@ -394,7 +392,7 @@ prototype data cannot establish real-world accuracy."* Page 5 runoff coefficient
 | `backend/app/services/flood_simulation.py` | 🟡 🟢 real DEM + 🔴 simulated water surface |
 | `backend/app/services/alert_engine.py` | 🟢 rules |
 | `backend/app/services/mithi_demo_pipeline.py` | 🔴 the demo mapping orchestration |
-| `backend/app/services/mqtt_ingestion.py` | 🟢 |
+| `backend/app/services/ingest.py` | transport-neutral ingestion entry point |
 | `backend/app/services/virtual_sensors.py` | 🔴 **not running** |
 | `backend/app/services/scenario_service.py` | 🔴 closed-form |
 | `backend/app/services/demo_controller.py` | 🟢 replay (empty by default) |

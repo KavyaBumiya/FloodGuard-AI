@@ -179,7 +179,7 @@ export default function PredictionPage() {
           ) : series.loading && !series.history.length ? (
             <SkeletonBlock height={300} label="Loading series" />
           ) : !hasLiveReading ? (
-            <EmptyState title="WAITING FOR SENSOR" hint="No recent real ESP32 MQTT reading is available." />
+            <EmptyState title="WAITING FOR SENSOR" hint="No recent real ESP32 HTTPS reading is available." />
           ) : (
             <WaterLevelChart
               history={series.history}

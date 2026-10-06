@@ -2,13 +2,17 @@
 FLOODGUARD AI — Replay & Demo Controller
 =========================================
 Manages demo mode, replay of recorded data, and system reset for hackathon demos.
+
+Replay re-injects recorded readings through exactly the same ingestion pipeline
+the hardware uses (services.ingest.ingest_payload), re-tagged as source="replay",
+so the whole product can be demonstrated with no device attached and the console
+still shows honest provenance.
 """
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone, timedelta
-from importlib import import_module
-from typing import Any, Optional
+from typing import Optional
 
 import structlog
 from sqlalchemy import select, delete
@@ -29,19 +33,8 @@ from app.models.floodguard import (
     SourceType,
     DataMode,
 )
-_mqtt_ingestion_module = import_module("app.services.mqtt_ingestion")
-mqtt_ingestion: Any = next(
-    (
-        value
-        for name, value in vars(_mqtt_ingestion_module).items()
-        if not name.startswith("_")
-        and not isinstance(value, type)
-        and callable(getattr(value, "_process_telemetry", None))
-    ),
-    _mqtt_ingestion_module,
-)
+from app.services.ingest import TelemetryRejected, ingest_payload
 from app.services.forecast_service import forecast_service
-from app.services.flood_simulation import flood_simulation_engine
 from app.services.alert_engine import alert_engine
 from app.integrations import cache
 
@@ -121,10 +114,15 @@ class DemoController:
         logger.info("replay_stopped")
 
     async def _run_replay(self, recording: ReplayRecording) -> None:
-        """Run replay by feeding recorded data through ingestion pipeline."""
+        """Run replay by feeding recorded data through the HTTP ingestion path.
+
+        Same pipeline, same validation, same audit trail as a live POST — only
+        the `source` tag and the pacing differ. That is the point: replay must
+        exercise the real code path, not a parallel one that can drift.
+        """
         payload = recording.payload
         readings = payload.get("readings", [])
-        
+
         if not readings:
             logger.warning("replay_empty", recording_id=recording.id)
             return
@@ -133,25 +131,46 @@ class DemoController:
         start_time = datetime.fromisoformat(readings[0]["timestamp"].replace("Z", "+00:00"))
         last_time = start_time
 
-        for i, reading_data in enumerate(readings):
-            if self._mode != "replay":
-                break
+        async with AsyncSessionLocal() as db:
+            for i, reading_data in enumerate(readings):
+                if self._mode != "replay":
+                    break
 
-            # Calculate delay to next reading
-            current_time = datetime.fromisoformat(reading_data["timestamp"].replace("Z", "+00:00"))
-            if i > 0:
-                delay = (current_time - last_time).total_seconds() / self._replay_speed
-                await asyncio.sleep(max(0, delay))
+                current_time = datetime.fromisoformat(
+                    reading_data["timestamp"].replace("Z", "+00:00")
+                )
+                if i > 0:
+                    delay = (current_time - last_time).total_seconds() / self._replay_speed
+                    await asyncio.sleep(max(0, delay))
 
-            last_time = current_time
+                last_time = current_time
 
-            # Mark as replay
-            reading_data["source"] = SourceType.REPLAY.value
-            reading_data["data_mode"] = DataMode.REPLAY.value
+                # Re-tag so the console never presents replayed data as live.
+                replayed = dict(reading_data)
+                replayed["source"] = SourceType.REPLAY.value
+                replayed["data_mode"] = DataMode.REPLAY.value
+                # Replay timestamps are historical; stamp them as "now" so the
+                # freshness gate and the 15/30/60 forecast windows stay valid.
+                replayed["timestamp"] = datetime.now(timezone.utc).isoformat()
+                # A retry after an interrupted replay must not be swallowed by
+                # the event_id idempotency check.
+                replayed.pop("event_id", None)
 
-            # Feed through MQTT ingestion (which stores and publishes)
-            node_code = reading_data.get("node_code", f"REPLAY-{i}")
-            await mqtt_ingestion._process_telemetry(node_code, reading_data)
+                node_code = str(replayed.get("node_code") or f"REPLAY-{i}")
+                try:
+                    await ingest_payload(
+                        db,
+                        replayed,
+                        node_code=node_code,
+                        allow_self_register=True,
+                    )
+                except TelemetryRejected as exc:
+                    logger.warning(
+                        "replay_reading_rejected",
+                        recording_id=recording.id,
+                        node_code=node_code,
+                        reason=exc.reason,
+                    )
 
         logger.info("replay_completed", recording_id=recording.id)
         await self.set_mode("live")

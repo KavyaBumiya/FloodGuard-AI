@@ -68,17 +68,11 @@ async def run_migrations_online() -> None:
     # through to alembic.ini's Docker-Compose-only `db:5432`, which fails DNS
     # off-Docker -- and, worse, would silently migrate a different database than
     # the one serving traffic if `db` happened to resolve.
-    db_url = get_settings().database_url
-
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+asyncpg://"):
-        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if "ssl=" not in db_url and "sslmode=" not in db_url:
-        host_part = db_url.split("@", 1)[-1].split("/", 1)[0]
-        host = host_part.split(":", 1)[0]
-        if host not in {"localhost", "127.0.0.1", "db", "postgres"}:
-            db_url = f"{db_url}{'&' if '?' in db_url else '?'}ssl=require"
+    #
+    # `database_dsn` already carries the asyncpg scheme and the ssl decision
+    # (Settings._force_asyncpg / Settings.database_requires_ssl), so this no
+    # longer needs to rewrite the URL itself — the two paths cannot drift.
+    db_url = get_settings().database_dsn
     connectable = create_async_engine(db_url)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

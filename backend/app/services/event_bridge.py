@@ -1,7 +1,7 @@
 """Redis -> Socket.IO bridge.
 
-Services publish domain events to Redis so that MQTT ingestion, replay and
-HTTP ingestion all share one path to the browser. This task turns those into
+Services publish domain events to Redis so that HTTPS ingestion, replay and
+scenario runs all share one path to the browser. This task turns those into
 Socket.IO frames.
 """
 from __future__ import annotations

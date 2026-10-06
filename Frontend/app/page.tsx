@@ -122,7 +122,7 @@ export default function DashboardPage() {
             ) : (
               <DataSourceBadge
                 source={nodeSource(selected?.node_type)}
-                note={selected?.node_type === 'physical' ? 'Recent ESP32 MQTT telemetry' : 'Simulated virtual node'}
+                note={selected?.node_type === 'physical' ? 'Recent ESP32 HTTPS telemetry' : 'Simulated virtual node'}
               />
             )}
             <span className="muted">
@@ -288,7 +288,7 @@ export default function DashboardPage() {
               onRetry={series.reload}
             />
           ) : selected?.node_type === 'physical' && !hasLiveReading ? (
-            <EmptyState title="NO LIVE IOT DATA" hint="Waiting for a recent ESP32 MQTT reading." />
+            <EmptyState title="NO LIVE IOT DATA" hint="Waiting for a recent ESP32 HTTPS reading." />
           ) : (
             <WaterLevelChart
               history={series.history}

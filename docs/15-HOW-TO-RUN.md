@@ -1,4 +1,4 @@
-# 15 — How to Run
+﻿# 15 — How to Run
 
 Every command below is taken from the actual project files. Nothing here is invented.
 
@@ -10,43 +10,95 @@ Every command below is taken from the actual project files. Nothing here is inve
 |---|---|---|
 | **Python 3.14** | `requirements.txt:2` — "verified working on Python 3.14" | |
 | **Node.js 20+ / npm** | Next.js 16 + React 19 | |
-| **Docker** (or local PostgreSQL 16 + PostGIS 3.4, Redis 7, Mosquitto 2) | `docker-compose.yml` | |
+| **Docker** (or local PostgreSQL 16 + PostGIS 3.4 and Redis 7 — no broker needed) | `docker-compose.yml` | |
 | `data/terrain/dem_mithi.tif` | flood simulation | already in the repo ✅ |
 | `models/flood/rf_*.joblib` | forecasting | already in the repo ✅ |
 | A registered physical device (or `curl` loop) | live demo | see §5 |
 
 **No `.env` change is strictly required to boot**, but two things must be fixed for a working system:
 
-1. **The database password.** `backend/.env` uses `floodguard:floodguard@localhost:5432`, but
-   `docker-compose.yml:7` creates the DB with password `floodguard_secret`. Pick one:
-   - change `backend/.env` → `postgresql+asyncpg://floodguard:floodguard_secret@localhost:5432/floodguard`
-     (this is what `.env.example` already says), **or**
-   - change `docker-compose.yml` → `POSTGRES_PASSWORD: floodguard`
+1. ~~**The database password.**~~ **Fixed.** `backend/.env`, `backend/.env.example`,
+   `docker-compose.yml`, `alembic.ini` and `config.py` all use `floodguard`, so a fresh clone
+   connects with no edits. If your `pgdata` volume predates that alignment it keeps its original
+   password — put that in `backend/.env`, or recreate it with `docker compose down -v`.
 2. **`IOT_REGISTRATION_TOKEN`.** `backend/.env:16` is the guessable
    `"your-registration-token-here"`. Change it if the API is reachable from anywhere but localhost.
 
 ---
 
-## 1. Start the infrastructure
+## 1. Start everything (one command)
 
 ```bash
 cd D:\Projects\Flood-Monitoring-System
-docker compose up -d
-docker compose ps          # wait for db/redis/mqtt to report (healthy)
+docker compose up -d --build
+docker compose ps
 ```
 
-| Service | Expect |
-|---|---|
-| `floodguard-db` | `healthy` (`pg_isready`) |
-| `floodguard-redis` | `healthy` (`redis-cli ping`) |
-| `floodguard-mqtt` | `healthy` (`mosquitto_sub … -W 3`), needs ~10 s `start_period` |
+That is the whole server. Four services, started in a guaranteed order:
+
+| Service | Expect | Role |
+|---|---|---|
+| `floodguard-db` | `healthy` (`pg_isready`) | PostGIS 16 |
+| `floodguard-redis` | `healthy` (`redis-cli ping`) | cache + Socket.IO queue + event bus |
+| `floodguard-migrate` | **`Exited (0)`** | one-shot: PostGIS → `alembic upgrade head` → OSM layers |
+| `floodguard-api` | `healthy` (`/healthz`) | the FastAPI app on **:8000** |
+
+Ordering is enforced by `depends_on` with `condition: service_completed_successfully`, not by hope:
+`api` cannot start until `db` and `redis` are healthy **and** `migrate` has exited 0. If migrations
+fail, the API never starts and the reason is in `docker compose logs migrate` — instead of a
+half-working console.
+
+Then:
+
+```bash
+curl http://localhost:8000/healthz
+# {"status":"ok","service":"floodguard-ai","version":"1.0.0"}
+
+curl http://localhost:8000/health
+# {"status":"ok",...,"database":"ok","redis":"ok","ingest":"http","open_meteo":"ok"}
+```
+
+`migrate` is idempotent, so every `up` is safe. On a fresh volume it inserts **4,521 buildings and
+4,502 roads**; on an existing volume it reports them as skipped.
+
+> **First boot takes a while.** The build is ~98 MB of context and the image pulls numpy/scipy/
+> scikit-learn/rasterio, so allow a few minutes. Later starts reuse the cached layers.
+
+### What you do NOT need to run from the host
+
+Nothing. `alembic upgrade head`, `scripts/load_osm_layers` and `uvicorn` all happen inside
+containers now. Sections 2.1, 2.2 and 2.5 below describe the *manual* equivalents — keep them for
+troubleshooting or for running the backend outside Docker, not for normal use.
+
+### Configuration
+
+`docker-compose.yml` reads optional variables from a **root** `.env` (not `backend/.env` — the
+image excludes that file). Everything has a working default, so no `.env` is needed:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `IOT_REGISTRATION_TOKEN` | `local-dev-registration-token` | gates `POST /api/iot/devices/register`. **Change it if the port is reachable beyond your LAN** |
+| `FRONTEND_ORIGIN` | *(empty)* | empty = allow all browser origins |
+| `BACKEND_PORT` | `8000` | host port for the API |
+| `RELEASE_LOAD_OSM` | `true` | set `false` after the first successful load to speed up restarts |
+| `DEMO_MODE_ENABLED` | `true` | |
+
+### Other commands
+
+```bash
+docker compose logs -f backend      # follow the API
+docker compose logs migrate        # what the one-shot did
+docker compose restart backend     # restart just the API
+docker compose down                 # stop, keep data
+docker compose down -v              # stop and DELETE the database
+```
 
 If Postgres was created with a different password previously, the named volume `pgdata` keeps the old
 credentials — `docker compose down -v` wipes it (destructive).
 
 ---
 
-## 2. Backend
+## 2. Backend (manual — only if not using Docker)
 
 ```bash
 cd backend
@@ -62,7 +114,7 @@ pip install -r requirements.txt
 
 ```bash
 # the extension is also auto-created on startup, but doing it now surfaces errors early
-psql "postgresql://floodguard:floodguard_secret@localhost:5432/floodguard" -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+psql "postgresql://floodguard:floodguard@localhost:5432/floodguard" -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 
 alembic upgrade head
 ```
@@ -140,7 +192,7 @@ curl -s http://127.0.0.1:8000/health
 ```
 ```json
 {"status":"ok","service":"floodguard-ai","version":"1.0.0",
- "database":"ok","redis":"ok","mqtt":"enabled","open_meteo":"ok"}
+ "database":"ok","redis":"ok","ingest":"http","open_meteo":"ok"}
 ```
 
 Startup log lines to look for:
@@ -148,20 +200,16 @@ Startup log lines to look for:
 schema_verified              (tables=…)
 seeded_reference_data        (study_area=True, data_sources=5)
 event_bridge_subscribed      (channel=floodguard:realtime)
-mqtt_subscribed              (topic=floodguard/nodes/+/telemetry)
 auto_forecast_started
 alert_engine_started
-floodguard_started           (env=development, mqtt=True)
+floodguard_started           (env=development)
 ```
 
-### 2.6 Disable MQTT (HTTP-only)
+### 2.6 Telemetry ingress is HTTP-only
 
-```bash
-# backend/.env
-MQTT_ENABLED=false
-```
-Then `_start_engines()` skips the MQTT service entirely and `POST /api/iot/telemetry` becomes the
-only ingestion path.
+There is nothing to disable. `POST /api/iot/telemetry` is the only ingestion path; the broker and its
+engine were removed. `_start_engines()` now starts only the forecast loop, the alert engine and the
+event bridge.
 
 ---
 
@@ -192,9 +240,11 @@ another host, and it drives the Socket.IO URL too (`lib/socket.ts:34`).
 | `npm run lint` | `eslint .` |
 | `npm test` | `node --test lib/*.test.ts` |
 
-> **On Windows:** `app/__init__.py:13-16` forces `WindowsSelectorEventLoopPolicy` because paho-mqtt's
-> own socket thread needs a selector loop. You do not need `asyncio.WindowsProactorEventLoopPolicy` or
-> `uvloop`.
+> **On Windows:** `app/__init__.py` forces `WindowsSelectorEventLoopPolicy`. This was originally for
+> paho-mqtt's own socket thread and is now **kept deliberately** — `sqlalchemy[asyncio]` and
+> `aiosqlite` drive their greenlet work through the loop's self-pipe, which only the selector loop
+> implements on Windows. Do not "upgrade" it to `WindowsProactorEventLoopPolicy`. You do not need
+> `uvloop` either.
 
 ---
 
@@ -266,24 +316,55 @@ done
 The final reading (17.6 cm) maps to `118 + (17.6/30)×102 = 177.8 cm` on the Mithi scale — already in
 the HIGH band (150 cm).
 
-### 5.3 From a real ESP32 over MQTT
+### 5.3 From a real ESP32 over HTTPS
 
-Publish JSON to `floodguard/nodes/VAD-ESP32-01/telemetry` on `localhost:1883`:
+POST JSON to `/api/iot/telemetry` with the device bearer token. Use a **UTC** timestamp with an
+unambiguous `Z`:
+
+```bash
+curl -i -X POST http://localhost:8000/api/iot/telemetry \
+  -H 'Authorization: Bearer <device token from 5.1>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "node_code": "VAD-ESP32-01",
+    "water_level_cm": 14.5,
+    "rainfall_mm_hr": 6.2,
+    "timestamp": "2026-10-06T03:45:00Z",
+    "battery_voltage": 4.05,
+    "event_id": "evt-0001",
+    "valid": true
+  }'
+```
 
 ```json
-{ "water_level_cm": 14.5, "rainfall_mm_hr": 6.2,
-  "timestamp": "2026-10-06T09:15:00+05:30",
-  "source": "iot", "valid": true, "battery_voltage": 4.05, "event_id": "evt-0001" }
+{ "id": 7760, "node_code": "VAD-ESP32-01", "status": "accepted",
+  "risk_level": "moderate", "risk_score": 0.3, "received_at": "2026-10-06T03:13:55.869236+00:00" }
 ```
 
-The node code comes from the **topic**, not the payload. The node must already be registered —
-`source: "iot"` on an unknown code is rejected with `unregistered_node_rejected`.
+The endpoint returns **201 for both successes** — `status` in the body is what differs:
 
-Quick test with `mosquitto_pub` inside the container:
-```bash
-docker exec floodguard-mqtt mosquitto_pub -h localhost -t 'floodguard/nodes/VAD-ESP32-01/telemetry' \
-  -m '{"water_level_cm":14.5,"rainfall_mm_hr":6.2,"timestamp":"2026-10-06T09:15:00+05:30","source":"iot","valid":true}'
-```
+| Status | Meaning |
+|---|---|
+| `201` `accepted` | stored and processed |
+| `201` `duplicate` | same `event_id` already stored — **this is the retry-safe path**; `id` is the original row |
+| `400` | ingest-level rejection, **audited in `rejected_readings`** (`valid:false`, stale timestamp) |
+| `422` | Pydantic schema rejection — missing field, wrong type, or out of range (not audited) |
+| `401` | missing or malformed `Authorization: Bearer …` |
+| `403` | the token's device does not match the body's `node_code` |
+| `429` | per-device rate limit exceeded; honour `Retry-After` |
+
+The node code comes from the **bearer token**, and the body's `node_code` must agree — that is the
+transport-level identity check the old broker could not provide. The node must already be
+registered; `source: "iot"` is set server-side for real hardware and an unknown code is rejected.
+
+Firmware sketch: [`16-DEPLOYMENT.md`](16-DEPLOYMENT.md) §7. Note the timing there — **one POST
+takes about a second** because four flood simulations run inline, so the client timeout must be
+≥ 10 s.
+
+> **Timestamp footgun.** Send `2026-10-06T03:45:00Z`, never a hand-written local offset. During
+> testing, eight valid readings were rejected as stale because the offset was mislabelled. The
+> freshness gate (24 h) is doing its job, but the UI just shows
+> `WAITING FOR REAL IoT INPUT` with no obvious cause.
 
 ---
 
@@ -407,7 +488,7 @@ pull-up) · `GPIO 23` buzzer · `GPIO 25` red LED · `GPIO 26` green LED · `GPI
 Firmware behaviour required by the PRD (§2, `System-Architecture.md:356-379`):
 median of several distance readings; `level = calibrated_sensor_height − distance + offset`;
 discard impossible values and flag invalid rather than sending them; count + debounce bucket tips;
-`rainfall_mm = tips × mm_per_tip`; sample every 5–10 s; publish JSON with `source: "iot"`; buffer on
+`rainfall_mm = tips × mm_per_tip`; sample every 5–10 s; POST JSON with the device bearer token; buffer on
 Wi-Fi loss and resend on reconnect; NTP sync.
 
 **Calibration for this build:** the demo mapping assumes the physical channel reads **0–30 cm**
@@ -422,7 +503,7 @@ surface stays in that band. A reading of 30 cm saturates the mapping at 220 cm.
 |---|---|---|
 | `/health` shows `"database":"error: …"` | password mismatch (§0) | align `.env` with `docker-compose.yml` |
 | Log `schema_incomplete_missing_tables` | migrations not applied | `alembic upgrade head` |
-| Log `unregistered_node_rejected` | MQTT for an unknown node code | register it first (§5.1) |
+| 400 + `Unregistered node: <code>` | telemetry for a node that was never registered | register it first (§5.1) |
 | Log `terrain_raster_missing` | the `.tif` was not found relative to the repo root | check `TERRAIN_RASTER_PATH`; `resolve_data_path` resolves against the **repo root**, not the CWD |
 | Simulation raises `RuntimeError("Terrain unavailable …")` | the raster is genuinely missing | run `python -m scripts.preprocess_data --skip-imd`, or set `ALLOW_SYNTHETIC_TERRAIN=true` (outputs then labelled SIMULATED) |
 | Console stuck on `DEGRADED` | Socket.IO not mounted, or the event bridge died | confirm `uvicorn app.main:app` (not a bare `app`); check for `event_bridge_subscribed` at startup |
@@ -432,7 +513,7 @@ surface stays in that band. A reading of 30 cm saturates the mapping at 220 cm.
 | `FORECAST` values identical to the current level | the RF raises on feature count and falls back to persistence | see `13-TESTING-AND-QUALITY.md` §5.1; look for `mithi_forecast_prediction_failed` |
 | No flood polygons on the map | no layer stored for the step, or < 0.1 m depth everywhere | check `GET /api/flood/layers/0`; verify the water level reaches the terrain |
 | Affected buildings/roads = 0 | `roads`/`buildings` empty | `python -m scripts.load_osm_layers`; verify with `GET /api/flood/map-layers?layer=roads` |
-| MQTT will not connect on Windows | event-loop policy | handled by `app/__init__.py`; make sure you import `app.*` (not run a bare script from `backend/`) |
+| Windows event-loop errors | policy | `app/__init__.py` forces the selector loop deliberately - do not override it (see §2.6) |
 | `pytest` cannot import `app.services.flood_simulation` | deps not installed / wrong CWD | run from `backend/`, with the venv active |
 | Frontend `Module type of file:… is not specified` warning | `package.json` has no `"type":"module"` | harmless; `node --test` reparses as ESM |
 
@@ -445,9 +526,7 @@ surface stays in that band. A reading of 30 cm saturates the mapping at 220 cm.
 | `DATABASE_URL` | `…floodguard@db:5432/floodguard` | local Docker → `localhost` + the right password |
 | `REDIS_URL` | `redis://redis:6379/0` | local Docker → `localhost` |
 | `IOT_REGISTRATION_TOKEN` | `""` | **always**, before exposing the API |
-| `MQTT_BROKER_HOST` / `_PORT` | `mqtt` / `1883` | local Docker → `localhost` |
-| `MQTT_TOPIC_PREFIX` | `floodguard` | changing it changes the topic grammar |
-| `MQTT_ENABLED` | `true` | set `false` for HTTP-only |
+| `FRONTEND_ORIGIN` | `*` | set it in production (Render) |
 | `STUDY_AREA_MIN_LAT` … `STUDY_AREA_MAX_LON` | 19.05 / 72.85 / 19.09 / 72.90 | relocating the corridor |
 | `TERRAIN_RASTER_PATH` | `data/terrain/dem_mithi.tif` | a different DEM |
 | `IMD_PROCESSED_DIR` | `data/rainfall/imd/processed` | — |

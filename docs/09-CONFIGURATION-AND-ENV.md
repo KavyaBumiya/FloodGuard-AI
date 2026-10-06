@@ -1,4 +1,4 @@
-# 09 — Configuration and Environment
+﻿# 09 — Configuration and Environment
 
 ---
 
@@ -17,20 +17,25 @@
 | `JWT_ALGORITHM` | `HS256` | ❌ |
 | `JWT_EXPIRE_MINUTES` | `60` | ❌ |
 
-> ⚠️ Note the password here is `floodguard`, but `docker-compose.yml:7` sets
-> `POSTGRES_PASSWORD: floodguard_secret`, and `alembic.ini:4` and `config.py:37` both use
-> **`floodguard`** (`floodguard:floodguard@…`). So the compose file and the app disagree: the app
-> will fail to authenticate against the compose database unless the password is aligned.
+> ✅ The password is `floodguard` in every place that matters: `docker-compose.yml:7`,
+> `alembic.ini:4`, `config.py:37`, `backend/.env` and `backend/.env.example`. They used to
+> disagree, which broke a fresh `docker compose up`; it is now aligned.
+>
+> One caveat remains: an existing `pgdata` volume keeps whatever password it was *created* with,
+> and `POSTGRES_PASSWORD` is only read on first initialisation. If your volume predates this
+> alignment, either put its original password in `backend/.env`, or recreate it with
+> `docker compose down -v` (destructive).
 
 ### IoT
 
 | Variable | Value on disk | Used? |
 |---|---|---|
 | `IOT_REGISTRATION_TOKEN` | `your-registration-token-here` | ✅ **gates `POST /api/iot/devices/register`. Change it.** |
-| `MQTT_BROKER_HOST` | `localhost` | ✅ |
-| `MQTT_BROKER_PORT` | `1883` | ✅ |
-| `MQTT_USERNAME` / `MQTT_PASSWORD` | empty | ✅ if set (broker is anonymous, so leave empty) |
-| `MQTT_TOPIC_PREFIX` | `floodguard` | ✅ — produces `floodguard/nodes/+/telemetry` |
+
+> **Telemetry ingress is HTTPS only.** The ESP32 POSTs to `/api/iot/telemetry` with a per-device
+> bearer token. There is no broker, so there is nothing to configure here — and nothing that can be
+> down at demonstration time. All `MQTT_*` settings were removed; see §7 and
+> [`16-DEPLOYMENT.md`](16-DEPLOYMENT.md) §3.
 
 ### External providers
 
@@ -87,7 +92,7 @@ Resulting `cors_origin_regex`: `https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?
 
 | Key | `.env` | `.env.example` |
 |---|---|---|
-| `DATABASE_URL` password | `floodguard` | `floodguard_secret` ← **matches docker-compose** |
+| `DATABASE_URL` password | `floodguard` | `floodguard` — **matches docker-compose** |
 | `DEMO_INPUT_NODE_CODE` | *absent* | `` (empty) |
 | `DEMO_INPUT_PHYSICAL_MIN_CM` | *absent* | `0` |
 | `DEMO_INPUT_PHYSICAL_MAX_CM` | *absent* | `30` |
@@ -110,26 +115,45 @@ The `DEMO_INPUT_*` block carries this comment (lines 58-59):
 | Field | Type | Default | Used |
 |---|---|---|---|
 | `database_url` | str | `postgresql+asyncpg://floodguard:floodguard@db:5432/floodguard` | ✅ (Docker default; `.env` overrides to localhost) |
+| `database_require_ssl` | `bool \| None` | `None` (auto) | ✅ see the DSN properties below |
+| `socketio_message_queue` | bool | `True` | ✅ multi-worker Socket.IO fan-out |
 
-### Redis / MQTT
+### Database DSN resolution (managed-host support)
+
+Render, Heroku, Neon and Supabase all supply `DATABASE_URL` as a bare `postgresql://`, which
+SQLAlchemy resolves to the **blocking** psycopg2 driver. `create_async_engine` then raises before
+the app can serve `/health`. Three members handle this so no consumer has to:
+
+| Member | Does |
+|---|---|
+| `_force_asyncpg` (validator) | rewrites `postgres://` and `postgresql://` → `postgresql+asyncpg://` |
+| `database_host` | bare hostname from the DSN |
+| `database_requires_ssl` | `True` unless the host is loopback / a compose service, or `database_require_ssl` is set explicitly |
+| `database_dsn` | the final string: asyncpg + `?ssl=require` when required; an explicit `ssl=`/`sslmode=` is always respected |
+
+Used by both `app/core/database.py` (the engine) and `alembic/env.py` (the migrations), so the two
+cannot drift — which is exactly how the bug stayed invisible: Alembic used to rewrite the scheme
+while the app did not.
+
+| Input | `settings.database_dsn` |
+|---|---|
+| `postgresql://u:p@dpg-abc.oregon.render.internal:5432/floodguard` | `postgresql+asyncpg://…?ssl=require` |
+| `postgresql+asyncpg://…@localhost:5432/floodguard` | unchanged, **no** `ssl=` |
+| `postgresql://u:p@host/db?sslmode=disable` | `sslmode=disable` respected |
+| any + `DATABASE_REQUIRE_SSL=false` | `ssl=` stripped |
+
+### Redis
 
 | Field | Type | Default | Used |
 |---|---|---|---|
 | `redis_url` | str | `redis://redis:6379/0` | ✅ |
-| `mqtt_broker_host` | str | `mqtt` | ✅ |
-| `mqtt_broker_port` | int | `1883` | ✅ |
-| `mqtt_username` | str | `""` | ✅ |
-| `mqtt_password` | str | `""` | ✅ |
-| `mqtt_topic_prefix` | str | `floodguard` | ✅ |
-| `mqtt_keepalive_seconds` | int | `60` | ✅ |
-| `mqtt_enabled` | bool | `True` | ✅ (gates the MQTT engine start) |
 
 ### Device auth
 
 | Field | Type | Default | Used |
 |---|---|---|---|
 | `iot_registration_token` | str | `""` | ✅ — with an empty value, `POST /devices/register` always 401s (line 190) |
-| `iot_telemetry_rate_limit_per_minute` | int | `12` | ❌ declared, never enforced |
+| `iot_telemetry_rate_limit_per_minute` | int | `12` | ✅ enforced per device by `app/services/rate_limit.py`; returns `429` + `Retry-After`. `0` disables |
 
 ### External sources
 
@@ -333,36 +357,44 @@ Its header states the honesty rule:
 
 ---
 
-## 6. `docker-compose.yml` (52 lines)
+## 6. `docker-compose.yml` (115 lines)
 
 | Service | Image | Container | Port(s) | Volume | Healthcheck |
 |---|---|---|---|---|---|
 | `db` | `postgis/postgis:16-3.4` | `floodguard-db` | `5432:5432` | `pgdata:/var/lib/postgresql/data` | `pg_isready -U floodguard -d floodguard`, 5 s / 5 s / 20 |
 | `redis` | `redis:7-alpine` | `floodguard-redis` | `6379:6379` | `redisdata:/data` | `redis-cli ping`, 5 s / 3 s / 20 |
-| `mqtt` | `eclipse-mosquitto:2` | `floodguard-mqtt` | `1883:1883`, `9001:9001` | bind-mounts `backend/deploy/mosquitto/mosquitto.conf` | `mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 3`, 10 s / 5 s / 10, `start_period: 10s` |
 
-All three: `restart: unless-stopped`.
+Both: `restart: unless-stopped`.
 
-Environment for `db`: `POSTGRES_USER=floodguard`, `POSTGRES_PASSWORD=floodguard_secret`,
-`POSTGRES_DB=floodguard`.
+Environment for `db`: `POSTGRES_USER=floodguard`, `POSTGRES_PASSWORD=floodguard`,
+`POSTGRES_DB=floodguard` — the same password `alembic.ini`, `config.py` and `.env.example` use.
 
-**The backend and the frontend are NOT in this compose file** — they run from the host.
+**The backend runs in this compose file too.** `migrate` (one-shot: PostGIS → `alembic upgrade head`
+→ OSM layers) then `backend` (the API on :8000). The **frontend** still runs from the host — it is a
+Next.js dev server and is not part of the backend image.
 
 ---
 
-## 7. `backend/deploy/mosquitto/mosquitto.conf` (10 lines)
+## 7. Telemetry transport (no broker)
 
-```
-listener 1883 0.0.0.0
-protocol mqtt
-listener 9001 0.0.0.0
-protocol websockets
-allow_anonymous true
-persistence false
-```
+There is no `mqtt` service and no `backend/deploy/mosquitto/mosquitto.conf` any more. Both were
+removed when the transport became HTTPS-only.
 
-Anonymous access on both listeners — fine for a LAN hackathon demo, **not** for anything else. Port
-9001 is exposed for browser-based MQTT debugging.
+| | Before | Now |
+|---|---|---|
+| Wire protocol | MQTT + HTTP | **HTTP only** |
+| Compose services | `db`, `redis`, `mqtt` | `db`, `redis` |
+| Ports to expose | 5432, 6379, **1883, 9001** | 5432, 6379 |
+| Runtime settings | `MQTT_BROKER_*`, `MQTT_TOPIC_PREFIX`, `MQTT_ENABLED` | *(none)* |
+| Dependency | `paho-mqtt>=2.0` | removed |
+| Background engine | `mqtt_ingestion` | removed |
+
+The ESP32 POSTs to `/api/iot/telemetry`. Nothing has to be reachable inbound, which is also what
+makes Render (and any PaaS without ingress) viable.
+
+Because the MQTT module also carried the Replay path, that logic moved to
+`app/services/ingest.py` — a transport-neutral `ingest_payload()` now shared by the HTTP endpoint
+and `demo_controller`. See [`16-DEPLOYMENT.md`](16-DEPLOYMENT.md) §3 for the diagram.
 
 ---
 

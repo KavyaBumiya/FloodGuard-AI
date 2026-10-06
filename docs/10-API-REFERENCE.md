@@ -32,7 +32,7 @@ Never raises. Always 200.
   "version": "1.0.0",
   "database": "ok",                // or "error: <ExceptionTypeName>"
   "redis": "ok",                   // or "error: <ExceptionTypeName>"
-  "mqtt": "enabled",               // from config only, NOT a live broker check
+  "ingest": "http",               // HTTPS is stateless - nothing to probe
   "open_meteo": "ok"               // or "unreachable" / "error: <Type>"
 }
 ```
@@ -60,7 +60,10 @@ See [`12-REALTIME-AND-ALERTING.md`](12-REALTIME-AND-ALERTING.md).
 ```jsonc
 // request
 { "node_code": "VAD-ESP32-01",        // 1–32, [A-Za-z0-9_-], auto-uppercased
-  "name": "Vadodara Demo Sensor",
+"name": "Vadodara Demo Sensor",   // optional; DEFAULTS TO node_code. sensor_nodes.name
+                                       // is NOT NULL, so omitting it used to raise a
+                                       // 500 — fixed, but send it if you want a
+                                       // human label in the console.
   "node_type": "physical",            // ^(physical|virtual)$
   "role": null,                       // ^(upstream|midstream|downstream)$
   "lat": 22.3072, "lng": 73.1812,     // lat −90..90, lng −180..180
@@ -105,13 +108,13 @@ Single node in the same shape. **404** `Device not found`.
 { "node_code": "VAD-ESP32-01",        // must match the authenticated device
   "water_level_cm": 14.5,             // 0..500, REQUIRED
   "rainfall_mm_hr": 6.2,              // 0..500, REQUIRED
-  "timestamp": "2026-10-06T09:15:00+05:30",  // ISO 8601, REQUIRED
+  "timestamp": "2026-10-06T03:45:00Z",     // ISO 8601, REQUIRED. Send unambiguous UTC.
   "flow_rate": null,                  // ≥0, optional  (m³/s)
   "soil_moisture": null,              // 0..1, optional
   "battery_voltage": 4.05,            // ≥0, optional  (V)
   "event_id": "evt-0001",             // ≤80, idempotency key
   "lat": null, "lng": null,           // optional location update
-  "source": "iot",                    // ^(iot|simulated|replay|scenario)$
+  "source": "iot",                    // accepted but IGNORED — pinned to "iot" (see below)
   "valid": true }
 
 // response
@@ -123,10 +126,19 @@ Single node in the same shape. **404** `Device not found`.
 |---|---|
 | 201 `status="accepted"` | stored, risk computed, realtime events published |
 | 201 `status="duplicate"` | `event_id` already stored for this node; original row returned |
-| 400 | `valid == false` → a `rejected_readings` row was written first |
-| 401 | missing / unknown device token |
+| 400 | ingest-level rejection (`valid == false`, stale/unparseable timestamp) → a `rejected_readings` row was written first |
+| 401 | missing / unknown device token (raised before rate limiting) |
 | 403 | node deactivated, or body `node_code` ≠ authenticated device |
-| 422 | schema validation |
+| 422 | Pydantic schema validation: missing field, wrong type, or `ge`/`le` range breach. Not audited |
+| 429 | per-device rate limit exceeded; honour the `Retry-After` header |
+
+`source` is present in the request schema for compatibility with replay payloads but is
+**overwritten with `"iot"`** on this endpoint: a device holding a valid bearer token *is* live
+hardware, and letting it claim `simulated`/`replay` would flip `data_mode` and corrupt the demo and
+replay bookkeeping. Replay calls `ingest_payload()` directly and is unaffected.
+
+Rate limiting is `IOT_TELEMETRY_RATE_LIMIT_PER_MINUTE` (default `12`, i.e. a 5 s cadence),
+counted per device in-process. Verified: 16 rapid POSTs produced `201` ×12 then `429` ×4.
 
 Side effects: writes `telemetry_readings` + a horizon-0 `risk_assessments` row; updates
 `sensor_nodes.last_seen_at` and `battery_pct`; publishes `flood.sensor.updated` and
