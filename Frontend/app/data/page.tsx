@@ -130,8 +130,18 @@ export default function DataPage() {
                 <div key={k}>
                   <span>{k}</span>
                   <span>
-                    MAE <b>{Number(v.mae ?? 0).toFixed(2)}</b>{' '}
-                    <span className="muted">vs baseline {Number(v.baseline_mae ?? 0).toFixed(2)}</span>
+                    MAE{' '}
+                    <b>
+                      {typeof v.mae === 'number' && Number.isFinite(v.mae)
+                        ? v.mae.toFixed(2)
+                        : '—'}
+                    </b>{' '}
+                    <span className="muted">
+                      vs baseline{' '}
+                      {typeof v.baseline_mae === 'number' && Number.isFinite(v.baseline_mae)
+                        ? v.baseline_mae.toFixed(2)
+                        : '—'}
+                    </span>
                   </span>
                 </div>
               ))

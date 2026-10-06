@@ -171,7 +171,16 @@ export default function ScenariosPage() {
     setStatus('Restored to the live sensor baseline.')
   }
 
-const num = (v: unknown) => (isNum(Number(v)) ? Number(v) : null)
+// A missing key and an explicit JSON null must BOTH read as "no value".
+  // `Number(null)` is 0, which is finite, so the previous version turned the
+  // backend's deliberate `scenario_flooded_area_m2: null` into a rendered
+  // "0.000 km²" - a real-looking zero for something never computed.
+  const num = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === '') return null
+    if (typeof v !== 'number' && typeof v !== 'string') return null
+    const n = Number(v)
+    return isNum(n) ? n : null
+  }
 
   return (
     <>

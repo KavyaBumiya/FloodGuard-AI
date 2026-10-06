@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
@@ -17,6 +17,7 @@ import {
   PanelTitle,
   RiskBadge,
 } from '@/components/ui/Primitives'
+import { forecastArray } from '@/types'
 import type { TimeStep } from '@/types'
 
 // Leaflet touches `window` at import time; keep it off the server entirely.
@@ -219,7 +220,7 @@ export default function MapPage() {
                   <div className="contrib-head">FORECAST</div>
                   <div className="rail-fc-row">
                     {[15, 30, 60].map((h) => {
-                      const f = selected.forecasts?.find((x) => x.horizon_minutes === h)
+                      const f = forecastArray(selected.forecasts).find((x) => x.horizon_minutes === h)
                       return (
                         <div key={h}>
                           <span className="muted">+{h}m</span>

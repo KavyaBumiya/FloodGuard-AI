@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
@@ -8,6 +8,7 @@ import { actions, RootState } from '@/store'
 import api from '@/lib/api'
 import type { StudyAreaResponse } from '@/lib/api'
 import { COLORS, riskColor } from '@/lib/constants'
+import { forecastArray } from '@/types'
 import type { GeoJsonFeatureCollection, TimeStep } from '@/types'
 
 const POLL_MS = 3000
@@ -23,6 +24,28 @@ function escapeHtml(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
+}
+
+/**
+ * The Mithi corridor, mirroring the backend's study-area settings.
+ *
+ * The map locks `maxBounds` to this box, but the live physical node is a
+ * Vadodara ESP32 roughly 370 km away. Markers are therefore only plotted for
+ * coordinates that fall inside these bounds; the live node stays visible in the
+ * provenance panels and the sensor list rather than dragging the viewport off
+ * the corridor.
+ */
+const STUDY_AREA_BOUNDS = { south: 19.05, west: 72.85, north: 19.09, east: 72.9 }
+
+function isInsideStudyArea(loc: { lat?: number | null; lng?: number | null }): boolean {
+  const { lat, lng } = loc ?? {}
+  if (typeof lat !== 'number' || typeof lng !== 'number') return false
+  return (
+    lat >= STUDY_AREA_BOUNDS.south &&
+    lat <= STUDY_AREA_BOUNDS.north &&
+    lng >= STUDY_AREA_BOUNDS.west &&
+    lng <= STUDY_AREA_BOUNDS.east
+  )
 }
 
 interface FloodMapProps {
@@ -226,11 +249,21 @@ export default function FloodMap({
 
     nodes.forEach((node) => {
       if (!node.location?.lat || !node.location?.lng) return
+      if (!isInsideStudyArea(node.location)) return
 
+      // Keep the physical Vadodara input OUT of the marker layer, but only once its
+      // position is genuinely inside the study-area viewport. It was skipped
+      // unconditionally, which was correct while /api/flood/nodes returned
+      // virtual nodes only. That endpoint now filters to physical, so every
+      // iteration bailed out here and the map rendered ZERO markers while the
+      // HUD still asserted "{n} Monitoring Nodes".
+      //
+      // The reason it was skipped is still valid: maxBounds is the Mithi
+      // corridor, and the Vadodara demo node sits ~370 km away. Plotting it
+      // would force the viewport across the country. So the marker layer plots
+      // only nodes that fall inside those bounds, and the provenance panels
+      // carry the rest.
       const isPhysical = node.node_type === 'physical'
-      // The physical Vadodara input is shown in the provenance panels, not as
-      // a Mithi River station marker.
-      if (isPhysical) return
       const risk = node.current_risk?.risk_level ?? 'unknown'
       const color = riskColor(risk)
       const isSelected = node.node_code === selectedNode
@@ -255,8 +288,8 @@ export default function FloodMap({
 
       const marker = L.marker([node.location.lat, node.location.lng], { icon: customIcon })
 
-      const forecastsHtml = (node.forecasts ?? [])
-        .map(
+const forecastsHtml = forecastArray(node.forecasts)
+      .map(
           (f) =>
             `<div style="display:flex; justify-content:space-between; margin-top:2px;">
               <span style="color:#8ca1ad;">+${f.horizon_minutes}m:</span>
@@ -389,7 +422,9 @@ export default function FloodMap({
 onEachFeature: (feature, l) => {
         const p = feature.properties || {}
         const depth = p.max_depth_m ? `${p.max_depth_m.toFixed(2)} m` : 'Estimated'
-        const riskLevel = escapeHtml(p.risk_level || 'Severe')
+        // Defaulting a missing risk_level to 'Severe' manufactured the highest
+// severity from absent data. Fall back to a neutral 'unknown'.
+const riskLevel = escapeHtml(p.risk_level || 'unknown')
         l.bindPopup(
           `<div style="font-family:Arial,sans-serif; color:#e8f0f4; background:#0b1a24; padding:8px; border-radius:6px; font-size:11px;">
             <b>Inundation Layer</b>
@@ -434,7 +469,21 @@ onEachFeature: (feature, l) => {
           `<div style="font-family:Arial,sans-serif; color:#e8f0f4; background:#0b1a24; padding:8px; border-radius:6px; font-size:11px;">
             <b>🏢 ${safeName}</b>
             <div style="color:#8ca1ad; font-size:9px; margin-top:2px;">Type: ${safeType}</div>
-            <div>Height: <b>${p.height_m ? `${p.height_m.toFixed(1)}m` : 'Estimated ~12m'}</b></div>
+            <!-- Height was rendered as a hardcoded 'Estimated ~12m' for any
+                 building without a height, fabricating a number the backend
+                 never produced. It supplies both height_m and
+                 height_is_estimated, so state the truth: a real OSM tag, a
+                 server-side estimate, or genuinely unknown. -->
+            <div>
+              Height:{' '}
+              <b>
+                ${
+          p.height_m != null
+            ? `${p.height_m.toFixed(1)}m${p.height_is_estimated ? ' (estimated)' : ''}`
+            : 'not recorded'
+        }
+      </b>
+    </div>
             <div style="color:#16d6d2; font-size:9px; margin-top:4px;">OSM Vector Geometry</div>
           </div>`,
           { className: 'floodguard-popup' },
@@ -519,9 +568,18 @@ onEachFeature: (feature, l) => {
         </div>
         <div style={{ fontSize: 10, color: COLORS.muted, marginTop: 4, display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: COLORS.ok }} />
-          <span>{nodes.length} Monitoring Nodes</span>
+          <span>
+            {nodes.filter((n) => isInsideStudyArea(n.location)).length} Monitoring Nodes
+          </span>
           <span>·</span>
-          <span>{inundationMeta?.maxDepth ? `Peak Depth: ${inundationMeta.maxDepth.toFixed(2)}m` : 'Safe Levels'}</span>
+          {/* `Safe Levels` asserted safety from MISSING data: the effect nulls
+              inundationMeta whenever the step's layer fails to load, so a fetch
+              error was displayed as reassurance. Say what is actually known. */}
+          <span>
+            {inundationMeta?.maxDepth != null
+              ? `Peak Depth: ${inundationMeta.maxDepth.toFixed(2)}m`
+              : 'No inundation data for this step'}
+          </span>
         </div>
         {layerError && (
           <div style={{ fontSize: 10, color: COLORS.danger, marginTop: 3 }}>{layerError}</div>

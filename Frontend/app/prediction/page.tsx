@@ -66,11 +66,18 @@ export default function PredictionPage() {
     () =>
       ['15min', '30min', '60min']
         .filter((h) => models?.[h])
-        .map((h) => ({
-          label: `+${h.replace('min', '')}m`,
-          mae: Number(models![h].mae ?? 0),
-          baseline: Number(models![h].baseline_mae ?? 0),
-        })),
+        .map((h) => {
+          const m = models![h]
+          // `?? 0` here rendered "MAE 0.00", which reads as a perfect model.
+          // The backend omits these keys when no model is registered, so the
+          // honest answer is null and the UI shows an em dash.
+          const mae = typeof m.mae === 'number' && Number.isFinite(m.mae) ? m.mae : null
+          const baseline =
+            typeof m.baseline_mae === 'number' && Number.isFinite(m.baseline_mae)
+              ? m.baseline_mae
+              : null
+          return { label: `+${h.replace('min', '')}m`, mae, baseline }
+        }),
     [models],
   )
 
@@ -271,8 +278,11 @@ export default function PredictionPage() {
               <div key={r.label}>
                 <span>{r.label}</span>
                 <span>
-                  MAE <b>{r.mae.toFixed(2)}</b> vs baseline{' '}
-                  <span className="muted">{r.baseline.toFixed(2)}</span>
+MAE{' '}
+                <b>{r.mae === null ? '—' : r.mae.toFixed(2)}</b> vs baseline{' '}
+                <span className="muted">
+                  {r.baseline === null ? '—' : r.baseline.toFixed(2)}
+                </span>
                 </span>
               </div>
             ))}

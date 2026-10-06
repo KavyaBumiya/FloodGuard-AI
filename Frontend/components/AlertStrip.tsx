@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { AlertTriangle, ArrowRight } from 'lucide-react'
 import { RISK_META, riskLevel } from '@/lib/constants'
+import { describeTrigger, formatTrigger } from '@/lib/alertTrigger'
 import { timeAgo } from '@/lib/format'
 import type { Alert, CurrentSummary } from '@/types'
 
@@ -20,7 +21,7 @@ export function AlertStrip({
   alerts: Alert[]
   summary: CurrentSummary | null
 }) {
-  const open = alerts.filter((a) => !a.acknowledged && a.is_active)
+  const open = alerts.filter((a) => !a.acknowledged && a.is_active !== false)
   if (!open.length) return null
 
   const worst = [...open].sort((a, b) => {
@@ -29,19 +30,8 @@ export function AlertStrip({
   })[0]
 
   const meta = RISK_META[riskLevel(worst.severity)]
-  const trigger = worst.trigger_data ?? {}
-  const value =
-    typeof trigger.current_value === 'number'
-      ? trigger.current_value
-      : typeof trigger.value === 'number'
-        ? trigger.value
-        : null
-  const threshold =
-    typeof trigger.threshold === 'number'
-      ? trigger.threshold
-      : typeof trigger.threshold_cm === 'number'
-        ? trigger.threshold_cm
-        : null
+  const reading = describeTrigger(worst)
+  const measured = formatTrigger(reading, { withThreshold: true })
 
   return (
     <div
@@ -62,11 +52,8 @@ export function AlertStrip({
 
       <span className="strip-meta">
         {worst.node_code ? <span className="strip-node">{worst.node_code}</span> : null}
-        {value !== null ? (
-          <span>
-            {value}
-            {threshold !== null ? ` / ${threshold}` : ''} cm
-          </span>
+        {measured !== null ? (
+          <span title={reading?.label ?? undefined}>{measured}</span>
         ) : null}
         {timeAgo(worst.created_at) ? <span>{timeAgo(worst.created_at)}</span> : null}
       </span>

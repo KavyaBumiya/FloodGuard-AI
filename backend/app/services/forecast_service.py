@@ -42,6 +42,36 @@ SAMPLING_INTERVAL_MINUTES = 5  # Assumed 5-minute sampling
 # Minimum readings needed for forecast
 MIN_READINGS_FOR_FORECAST = max(LAGS) + 2
 
+# The order the models were TRAINED on. It must match
+# backend/scripts/train_forecast_models.py::FEATURE_ORDER exactly: sklearn
+# validates the vector by position and has no idea what a column means.
+#
+# `upstream_level_cm` is last because the trainer appends it last. Two live
+# paths previously disagreed here and both were wrong:
+#
+#   * generate_mithi_forecasts built only 10 keys, so predict() raised
+#     "X has 10 features, but RandomForestRegressor is expecting 11", the
+#     exception was swallowed, and every horizon fell back to persistence.
+#   * _build_features had all 11 but fed them RAW physical centimetres
+#     (0-30) while the model was trained on mapped Mithi stage (120-245),
+#     so predict() silently returned nonsense with nothing in the log.
+#
+# Both now go through `_feature_vector`, so the count and the order cannot
+# drift apart again.
+FEATURE_ORDER = (
+    "current_level",
+    "prev_level_1",
+    "prev_level_2",
+    "prev_level_3",
+    "prev_level_6",
+    "current_rainfall",
+    "avg_rainfall_1h",
+    "rainfall_trend",
+    "rise_rate",
+    "level_std",
+    "upstream_level_cm",
+)
+
 
 class ForecastService:
     """
@@ -60,9 +90,14 @@ class ForecastService:
         self._task: Optional[asyncio.Task] | None = None
         self._running = False
 
-    async def load_models(self) -> None:
-        """Load all trained models from disk."""
-        if self._loaded:
+    async def load_models(self, force: bool = False) -> None:
+        """Load all trained models from disk.
+
+        `force` re-reads the artefacts even if a previous load succeeded, so the
+        auto-forecast loop can recover on its own rather than staying degraded
+        until the process restarts.
+        """
+        if self._loaded and not force:
             return
 
         # Repo-relative path: resolving against the process CWD silently missed
@@ -92,19 +127,41 @@ class ForecastService:
                         self._bundles[horizon] = {"algorithm": type(loaded).__name__}
                         logger.info("forecast_model_loaded", horizon=horizon)
                 except Exception as exc:
-                    logger.error("forecast_model_load_failed", horizon=horizon, error=str(exc))
-                    self._models[horizon] = PersistenceModel()
+                    # Same reasoning as the missing-artefact branch: a
+                    # PersistenceModel here would publish a flat forecast
+                    # labelled status "ok". Refuse instead.
+                    logger.error(
+                        "forecast_model_load_failed",
+                        horizon=horizon,
+                        error=str(exc),
+                        consequence="no forecast will be published for this horizon",
+                    )
+                    self._models.pop(horizon, None)
             else:
-                logger.warning("forecast_model_not_found", horizon=horizon, path=str(model_path))
-                # Create a simple persistence model as fallback
-                self._models[horizon] = PersistenceModel()
-                self._bundles[horizon] = {
-                    "algorithm": "persistence",
-                    "note": "no trained artefact found; falling back to persistence",
-                }
+                # No artefact for this horizon. Leave the slot EMPTY rather than
+                # installing a PersistenceModel.
+                #
+                # PersistenceModel.predict returns x[0] - the current level - so
+                # it is indistinguishable from a real model that happened to
+                # predict no change. It was writing rows with status "ok" and a
+                # flat +15/+30/+60 series, which is exactly what a persistence
+                # fallback looks like. Silently indistinguishable output is the
+                # failure mode that hid the feature-vector bug for so long, so
+                # the service now refuses to predict instead of faking it.
+                logger.error(
+                    "forecast_model_artifact_missing",
+                    horizon=horizon,
+                    path=str(model_path),
+                    consequence=(
+                        "no forecast will be published for this horizon; "
+                        "retrain with backend/scripts/train_forecast_models.py"
+                    ),
+                )
+                self._models.pop(horizon, None)
 
         # Load model registry from database
         await self._load_model_registry()
+        self._verify_model_features()
         self._loaded = True
 
     async def _load_model_registry(self) -> None:
@@ -148,11 +205,22 @@ class ForecastService:
     async def _auto_forecast_loop(self) -> None:
         """Periodically generate forecasts for all active nodes."""
         while self._running:
+            # start_auto_forecast() awaits load_models() before creating this
+            # task, so _models is populated here. Re-checking every cycle is
+            # cheap and turns a silent degradation into a loud one: without it,
+            # an empty _models makes every predict() loop `continue`, no rows
+            # are written, and the console shows stale forecasts indefinitely.
+            if not self._models:
+                logger.error(
+                    "auto_forecast_no_models_loaded",
+                    consequence="skipping this cycle; no forecast will be published",
+                )
+                await self.load_models(force=True)
             try:
                 await self.generate_all_forecasts()
             except Exception as exc:
                 logger.error("auto_forecast_error", error=str(exc))
-            
+
             await asyncio.sleep(60)  # Run every minute
 
     async def generate_all_forecasts(self, source: str = "live") -> dict[int, list[Forecast]]:
@@ -245,30 +313,50 @@ class ForecastService:
                 )
                 return []
             levels = [self.map_demo_level(item.water_level_cm) for item in history]
-            levels.append(current_level_cm)
-            rainfall = [item.rainfall_mm_hr for item in history] + [rainfall_mm_hr]
-            features = {
-                "current_level": levels[-1],
-                "prev_level_1": levels[-2] if len(levels) > 1 else levels[-1],
-                "prev_level_2": levels[-3] if len(levels) > 2 else levels[-1],
-                "prev_level_3": levels[-4] if len(levels) > 3 else levels[-1],
-                "prev_level_6": levels[-7] if len(levels) > 6 else levels[-1],
-                "current_rainfall": rainfall[-1],
-                "avg_rainfall_1h": float(np.mean(rainfall[-12:])),
-                "rainfall_trend": rainfall[-1] - rainfall[-2] if len(rainfall) > 1 else 0.0,
-                "rise_rate": levels[-1] - levels[-2] if len(levels) > 1 else 0.0,
-                "level_std": float(np.std(levels[-6:])) if len(levels) >= 6 else 0.0,
-            }
+            rainfall = [item.rainfall_mm_hr for item in history]
+
+            # `history` is the most recent FEATURE_WINDOW_SIZE IoT readings, so
+            # it ALREADY ends with the reading being forecast. Appending
+            # current_level_cm again duplicated the last sample, which made
+            # levels[-1] == levels[-2] and rainfall[-1] == rainfall[-2], and so
+            # zeroed both `rise_rate` and `rainfall_trend`. Two of the eleven
+            # features are momentum, so the forest saw a flat series and
+            # returned the current level for every horizon - indistinguishable
+            # from persistence, but with status "ok" and nothing in the log.
+            #
+            # So: replace the tail when it is the same sample, append only when
+            # the window genuinely does not contain it.
+            if levels and abs(levels[-1] - current_level_cm) < 1e-9:
+                rainfall[-1] = rainfall_mm_hr
+            else:
+                levels.append(current_level_cm)
+                rainfall.append(rainfall_mm_hr)
+
+            # Fetch the upstream neighbour on the model's scale, exactly as the
+            # trainer did. This was the missing 11th feature: without it
+            # predict() raised and every horizon silently became persistence.
+            upstream_level_cm = await self._mapped_upstream_level(db, node_id)
+            vector = self._feature_vector(levels, rainfall, upstream_level_cm)
+
             forecasts: list[Forecast] = []
             for horizon in HORIZONS:
                 model = self._models.get(horizon)
                 if model is None:
                     continue
                 try:
-                    predicted = float(model.predict([list(features.values())])[0])
+                    predicted = float(model.predict([vector])[0])
                 except Exception as exc:
-                    logger.error("mithi_forecast_prediction_failed", horizon=horizon, error=str(exc))
+                    logger.error(
+                        "mithi_forecast_prediction_failed",
+                        horizon=horizon,
+                        error=str(exc),
+                        features_supplied=len(vector),
+                        features_expected=len(FEATURE_ORDER),
+                    )
                     predicted = current_level_cm
+                    status = "model_error"
+                else:
+                    status = "ok"
                 made_at = datetime.now(timezone.utc)
                 forecast = Forecast(
                     node_id=node_id,
@@ -280,7 +368,7 @@ class ForecastService:
                     lower_bound_cm=round(max(0.0, predicted - 10.0), 1),
                     upper_bound_cm=round(predicted + 10.0, 1),
                     input_source=source,
-                    status="ok",
+                    status=status,
                 )
                 db.add(forecast)
                 forecasts.append(forecast)
@@ -306,15 +394,16 @@ class ForecastService:
                 )
                 return await self._create_insufficient_data_forecasts(db, node_id, source)
 
-            # Build features
-            features = self._build_features(readings)
-            
-            # Get upstream node reading if available
-            upstream_level = await self._get_upstream_level(db, node_id)
-            if upstream_level is not None:
-                features["upstream_level_cm"] = upstream_level
-            else:
-                features["upstream_level_cm"] = 0.0
+            # Map readings onto the model's training scale before vectorising, and
+            # resolve the upstream neighbour on that same scale. Previously this
+            # path had all 11 features but fed them raw physical centimetres
+            # (0-30) to a model trained on mapped Mithi stage (120-245), which
+            # does not raise - it just returns wrong numbers silently.
+            upstream_level_cm = await self._mapped_upstream_level(db, node_id)
+            vector = self._build_features(readings, upstream_level_cm)
+
+            # Persistence baseline = the most recent mapped level.
+            current_mapped = self.map_demo_level(readings[-1].water_level_cm)
 
             forecasts = []
 
@@ -324,10 +413,21 @@ class ForecastService:
                     continue
 
                 try:
-                    predicted_level = float(model.predict([list(features.values())])[0])
+                    predicted_level = float(model.predict([vector])[0])
+                    status = "ok"
                 except Exception as exc:
-                    logger.error("forecast_prediction_failed", horizon=horizon, error=str(exc))
-                    predicted_level = readings[0].water_level_cm  # Persistence fallback
+                    logger.error(
+                        "forecast_prediction_failed",
+                        horizon=horizon,
+                        error=str(exc),
+                        features_supplied=len(vector),
+                        features_expected=len(FEATURE_ORDER),
+                    )
+                    # readings are chronological, so persistence is the LAST
+                    # one. This used readings[0], i.e. the oldest reading in the
+                    # window - not a baseline at all.
+                    predicted_level = current_mapped
+                    status = "model_error"
 
                 # Calculate confidence bounds (simplified)
                 lower_bound = predicted_level - 10.0
@@ -350,7 +450,7 @@ class ForecastService:
                     lower_bound_cm=round(lower_bound, 1),
                     upper_bound_cm=round(upper_bound, 1),
                     input_source=source,
-                    status="ok",
+                    status=status,
                 )
                 db.add(forecast)
                 forecasts.append(forecast)
@@ -382,11 +482,27 @@ class ForecastService:
         readings = result.scalars().all()
         return list(reversed(readings))  # Chronological order
 
-    def _build_features(self, readings: list[TelemetryReading]) -> dict[str, float]:
-        """Build feature vector from recent readings."""
-        levels = [r.water_level_cm for r in readings]
-        rainfall = [r.rainfall_mm_hr for r in readings]
-        
+    def _feature_vector(
+        self,
+        levels: list[float],
+        rainfall: list[float],
+        upstream_level_cm: float = 0.0,
+    ) -> list[float]:
+        """Build the ordered feature vector for every horizon.
+
+        Both live paths call this, which is the point: a positional vector
+        cannot be validated by sklearn, so the only defence is having exactly
+        one place that builds it.
+
+        `levels` MUST already be on the model's training scale - mapped Mithi
+        stage (see `map_demo_level`, nominally 118-220 cm), not raw physical
+        centimetres. The models were fitted against `storage_to_levels()`, which
+        spans BASE_LEVEL_CM=120 to DESIGN_PEAK_CM=245. Feeding them raw sensor
+        centimetres does not raise: it returns plausible-looking nonsense.
+
+        `upstream_level_cm` defaults to 0.0, which is exactly what the trainer
+        used when no upstream series exists, so a single node matches training.
+        """
         features = {
             "current_level": levels[-1],
             "prev_level_1": levels[-2] if len(levels) > 1 else levels[-1],
@@ -394,13 +510,78 @@ class ForecastService:
             "prev_level_3": levels[-4] if len(levels) > 3 else levels[-1],
             "prev_level_6": levels[-7] if len(levels) > 6 else levels[-1],
             "current_rainfall": rainfall[-1],
-            "avg_rainfall_1h": np.mean(rainfall[-12:]) if len(rainfall) >= 12 else np.mean(rainfall),
+            "avg_rainfall_1h": float(np.mean(rainfall[-12:])),
             "rainfall_trend": rainfall[-1] - rainfall[-2] if len(rainfall) > 1 else 0.0,
             "rise_rate": levels[-1] - levels[-2] if len(levels) > 1 else 0.0,
-            "level_std": np.std(levels[-6:]) if len(levels) >= 6 else 0.0,
+            "level_std": float(np.std(levels[-6:])) if len(levels) >= 6 else 0.0,
+            "upstream_level_cm": float(upstream_level_cm),
         }
-        
-        return features
+        return [float(features[name]) for name in FEATURE_ORDER]
+
+    def _predict_horizons(
+        self, vector: list[float]
+    ) -> dict[int, float]:
+        """Run every horizon, falling back to persistence per horizon.
+
+        Returns a mapping rather than a list so the caller can tell which
+        horizons actually used the model. A silent fallback is the failure
+        mode that hid this bug for so long, so it is logged at error level and
+        surfaced, never swallowed.
+        """
+        predictions: dict[int, float] = {}
+        for horizon in HORIZONS:
+            model = self._models.get(horizon)
+            if model is None:
+                continue
+            try:
+                predictions[horizon] = float(model.predict([vector])[0])
+            except Exception as exc:
+                logger.error(
+                    "forecast_prediction_failed",
+                    horizon=horizon,
+                    error=str(exc),
+                    features_supplied=len(vector),
+                    features_expected=len(FEATURE_ORDER),
+                )
+                raise
+        return predictions
+
+    def _verify_model_features(self) -> None:
+        """Log loudly at load time if a model's width disagrees with FEATURE_ORDER.
+
+        A count mismatch raises inside predict() and is recoverable. A *value*
+        scale mismatch does not raise at all, so the width check is the only
+        automated tripwire available.
+        """
+        expected = len(FEATURE_ORDER)
+        for horizon, model in self._models.items():
+            found = getattr(model, "n_features_in_", None)
+            if found is None:
+                logger.warning("forecast_model_feature_count_unknown", horizon=horizon)
+                continue
+            if int(found) != expected:
+                logger.error(
+                    "forecast_model_feature_count_mismatch",
+                    horizon=horizon,
+                    model_expects=int(found),
+                    feature_order_supplies=expected,
+                    feature_order=list(FEATURE_ORDER),
+                    hint="retrain with backend/scripts/train_forecast_models.py, or correct FEATURE_ORDER",
+                )
+            else:
+                logger.info(
+                    "forecast_model_feature_count_ok",
+                    horizon=horizon,
+                    features=expected,
+                )
+
+    def _build_features(
+        self, readings: list[TelemetryReading], upstream_level_cm: float = 0.0
+    ) -> list[float]:
+        """Map raw sensor readings onto the model's scale, then vectorise."""
+        levels = [self.map_demo_level(r.water_level_cm) for r in readings]
+        rainfall = [r.rainfall_mm_hr for r in readings]
+        return self._feature_vector(levels, rainfall, upstream_level_cm)
 
     async def _get_upstream_level(self, db: AsyncSession, node_id: int) -> Optional[float]:
         """Get latest water level from upstream node."""
@@ -421,6 +602,23 @@ class ForecastService:
             .limit(1)
         )
         return upstream_result.scalar_one_or_none()
+
+    async def _mapped_upstream_level(self, db: AsyncSession, node_id: int) -> float:
+        """Latest upstream reading, mapped onto the model's training scale.
+
+        Returns 0.0 when there is no upstream relationship, which is precisely
+        what `train_forecast_models.build_dataset` used for the single-node
+        case, so a lone node matches its training distribution instead of
+        contributing a value the model never saw.
+
+        The raw value is deliberately NOT used: `_get_upstream_level` returns
+        physical centimetres (0-30) while this feature is trained on mapped
+        stage (120-245).
+        """
+        raw = await self._get_upstream_level(db, node_id)
+        if raw is None:
+            return 0.0
+        return self.map_demo_level(float(raw))
 
     async def _create_insufficient_data_forecasts(
         self, db: AsyncSession, node_id: int, source: str
@@ -545,12 +743,36 @@ class ForecastService:
                 "training_data_description": bundle.get("level_source"),
                 "registered_in_db": False,
             }
-        return {"model_name": "persistence", "version": "baseline", "registered_in_db": False}
+        # No model at all for this horizon. Say so plainly - the console renders
+        # this as an em dash rather than "MAE 0.00", which reads as a perfect
+        # model.
+        return {
+            "model_name": None,
+            "version": None,
+            "algorithm": None,
+            "registered_in_db": False,
+            "available": False,
+            "note": (
+                "No trained artefact found for this horizon, so no forecast is "
+                "produced. Retrain with backend/scripts/train_forecast_models.py."
+            ),
+        }
 
 
 class PersistenceModel:
-    """Simple persistence baseline: future level = current level."""
-    
+    """Persistence baseline: the future level equals the current level.
+
+    Kept ONLY for offline evaluation - the training script compares candidate
+    regressors against it, and `/api/about/model-info` documents what the
+    baseline means.
+
+    It is deliberately NOT installed as a runtime fallback. `predict` returns
+    `x[0]`, which is indistinguishable from a trained model that predicts no
+    change, so substituting it at serving time publishes plausible-looking
+    numbers that no model produced. Where a model is unavailable the service
+    now declines to predict rather than fabricate a forecast.
+    """
+
     def predict(self, X):
         # X contains features, current_level is first feature
         return np.array([x[0] for x in X])

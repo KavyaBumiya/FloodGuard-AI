@@ -126,6 +126,12 @@ async def get_active_alerts(
                 "message": a.message,
                 "trigger_data": a.trigger_data,
                 "is_scenario_alert": a.is_scenario_alert,
+                # The query already filters on is_active, so this is always
+                # true - but /history and the collection endpoint both return
+                # it, and AlertStrip.tsx filters on it. Omitting it here made
+                # that filter evaluate undefined for every alert, so the strip
+                # never rendered at all.
+                "is_active": a.is_active,
                 "acknowledged": a.acknowledged,
                 "created_at": a.created_at.isoformat(),
             }

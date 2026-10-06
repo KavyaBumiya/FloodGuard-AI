@@ -5,6 +5,7 @@ import { CheckCheck, ChevronDown } from 'lucide-react'
 import api from '@/lib/api'
 import { ALERT_SEVERITY_ORDER, RISK_META, riskLevel } from '@/lib/constants'
 import { EM_DASH, fmtIsoHm, isNum, timeAgo } from '@/lib/format'
+import { describeTrigger } from '@/lib/alertTrigger'
 import { useAppState } from '@/hooks/useFloodguard'
 import {
   DataSourceBadge,
@@ -281,9 +282,7 @@ function AlertCard({
   busy: boolean
 }) {
   const m = RISK_META[riskLevel(alert.severity)]
-  const t = alert.trigger_data ?? {}
-  const value = numOf(t.current_value) ?? numOf(t.value)
-  const threshold = numOf(t.threshold) ?? numOf(t.threshold_cm)
+  const reading = describeTrigger(alert)
 
   return (
     <article className="alert-card" style={{ borderLeftColor: m.color }}>
@@ -308,8 +307,20 @@ function AlertCard({
 
       {expanded ? (
         <div className="alert-card-detail">
-          <MetricValue label="CURRENT VALUE" value={isNum(value) ? `${value} cm` : EM_DASH} />
-          <MetricValue label="THRESHOLD" value={isNum(threshold) ? `${threshold} cm` : EM_DASH} tone="var(--warn)" />
+<MetricValue
+              label={reading?.label ?? 'MEASURED VALUE'}
+              value={isNum(reading?.value) ? `${round1(reading!.value)} ${reading!.unit}` : EM_DASH}
+            />
+            <MetricValue
+              label="THRESHOLD"
+              value={
+                isNum(reading?.threshold)
+                  ? `${round1(reading!.threshold)} ${reading!.thresholdUnit}`
+                  : EM_DASH
+              }
+              tone="var(--warn)"
+            />
+            {reading?.detail ? <MetricValue label="HORIZON" value={reading.detail} /> : null}
           <MetricValue label="TYPE" value={alert.alert_type.replace(/_/g, ' ').toUpperCase()} />
           <div className="alert-card-actions">
             {alert.is_scenario_alert ? <DataSourceBadge source="scenario" short /> : null}
@@ -328,6 +339,6 @@ function AlertCard({
   )
 }
 
-function numOf(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
+function round1(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
 }

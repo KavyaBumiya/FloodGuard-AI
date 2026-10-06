@@ -351,8 +351,33 @@ class ScenarioService:
             f"(average {avg_level_diff:.0f} cm across nodes). "
         )
 
+        # Corridor roll-ups derived from the same per-node peaks, so they cannot
+        # disagree with `node_comparisons`. The console's BASELINE vs SCENARIO
+        # tiles read exactly these keys; they were absent from the response, so
+        # all four tiles rendered an em dash even after a run had genuinely
+        # succeeded. Derived, never invented: None when there is nothing to
+        # roll up, which the UI renders as a dash rather than a zero.
+        baseline_peaks = [c["peak_level_baseline_cm"] for c in node_comparisons]
+        scenario_peaks = [c["peak_level_scenario_cm"] for c in node_comparisons]
+        baseline_peak = max(baseline_peaks) if baseline_peaks else None
+        scenario_peak = max(scenario_peaks) if scenario_peaks else None
+        baseline_mean = (
+            round(sum(baseline_peaks) / len(baseline_peaks), 1) if baseline_peaks else None
+        )
+        scenario_mean = (
+            round(sum(scenario_peaks) / len(scenario_peaks), 1) if scenario_peaks else None
+        )
+
         return {
             "node_comparisons": node_comparisons,
+            "baseline_peak_level_cm": baseline_peak,
+            "baseline_mean_level_cm": baseline_mean,
+            "scenario_peak_level_cm": scenario_peak,
+            "scenario_mean_level_cm": scenario_mean,
+            # Never computed: the inundation engine reports area per
+            # flood_layer row and no scenario roll-up exists. Declared as null
+            # so the UI omits the tile instead of rendering "0.000 km²".
+            "scenario_flooded_area_m2": None,
             "peak_level_difference_cm": round(max_level_diff, 1),
             "average_level_difference_cm": round(avg_level_diff, 1),
             "summary": summary,

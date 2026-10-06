@@ -55,7 +55,7 @@ Toolkit · Leaflet · three.js · Recharts · Socket.IO** on the front.
 |---|---|---|
 | 08 | [`DEMO-AND-SIMULATED-DATA`](docs/08-DEMO-AND-SIMULATED-DATA.md) | **Exactly where every simulated / demo / test / orphan dataset is used**, and a table of whether each visible number is real |
 | 09 | [`CONFIGURATION-AND-ENV`](docs/09-CONFIGURATION-AND-ENV.md) | Every `.env` variable, every `Settings` field, both config JSONs, all build configs, and a change-impact table |
-| 13 | [`TESTING-AND-QUALITY`](docs/13-TESTING-AND-QUALITY.md) | The test suites, **live test results**, dead code, and **20 ranked defects** — 4 now fixed |
+| 13 | [`TESTING-AND-QUALITY`](docs/13-TESTING-AND-QUALITY.md) | The test suites, **live test results**, dead code, and **20 ranked defects** — 7 now fixed |
 | 14 | [`HONESTY-AND-LIMITATIONS`](docs/14-HONESTY-AND-LIMITATIONS.md) | Every disclaimer in the product, collected verbatim, plus what is *not* disclosed |
 | 15 | [`HOW-TO-RUN`](docs/15-HOW-TO-RUN.md) | Exact commands, plus a troubleshooting table |
 | 16 | [`DEPLOYMENT`](docs/16-DEPLOYMENT.md) | **Part A: Docker on your PC + Cloudflare Tunnel + frontend on Vercel** (verified live). Part B: Render as a managed-PaaS reference |
@@ -127,11 +127,11 @@ Full walkthrough, the quick-tunnel URL caveat, and the security implications:
 9. **The risk engine is rule-based, not ML** — a weighted sum (0.35 / 0.30 / 0.20 / 0.15) over four
    banded inputs, with the primary driver named so nothing is a black box.
 
-10. **There are 20 catalogued defects, 4 of them now fixed**, two still high-impact. The most
-    consequential: the live
-    forecast path passes 10 features to an 11-feature model, so the Random Forest raises, the
-    exception is caught, and every live forecast silently degrades to persistence while still
-    labelled `FORECAST`. See [`13-TESTING-AND-QUALITY.md`](docs/13-TESTING-AND-QUALITY.md) §5.
+10. **There are 20 catalogued defects, 7 of them now fixed.** The one that mattered most — the
+    Random Forest never actually ran on live data — is fixed: forecasts now return differentiated
+    +15/+30/+60 values instead of silently degrading to persistence while labelled `FORECAST`. The
+    remaining high-impact one is that the 2D map previously rendered zero sensor markers; that is
+    also fixed. See [`13-TESTING-AND-QUALITY.md`](docs/13-TESTING-AND-QUALITY.md) §5.
 
 ---
 

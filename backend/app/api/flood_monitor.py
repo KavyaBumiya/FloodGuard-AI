@@ -427,6 +427,13 @@ async def get_flood_node(
             "source": latest.source,
         } if latest else None,
         "risk_by_horizon": risk_by_horizon,
+        # Horizon 0 IS the present-tense assessment - the engine writes a
+        # horizon-0 RiskAssessment alongside every reading. Exposing it under
+        # its own key means a consumer does not have to know that "current"
+        # means "the row keyed 0", which is what the console was assuming and
+        # failing on (it read `current_risk`, which did not exist, so the
+        # prediction page's risk panels never rendered).
+        "current_risk": risk_by_horizon.get(0),
         "forecasts": forecast_by_horizon,
     }
 

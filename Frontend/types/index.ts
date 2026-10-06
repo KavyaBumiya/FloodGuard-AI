@@ -93,8 +93,23 @@ export interface FloodNode {
   warning_threshold_cm?: number | null
   latest_reading?: SensorReading | null
   current_risk?: RiskResult | null
-  forecasts?: ForecastPoint[]
+  risk_by_horizon?: Record<number, RiskResult>
+  // `/api/flood/forecasts/{code}` returns a flat array; `/api/flood/nodes/{code}`
+  // keys the same objects by horizon. Use `forecastArray()` to read either.
+  forecasts?: ForecastPoint[] | Record<number, ForecastPoint>
   forecast_status?: 'ok' | 'insufficient_live_iot_data' | 'waiting_for_iot'
+}
+
+/** Normalises either forecasts shape to a horizon-sorted array. */
+export function forecastArray(
+  input: ForecastPoint[] | Record<number, ForecastPoint> | null | undefined,
+): ForecastPoint[] {
+  if (!input) return []
+  if (Array.isArray(input)) return input
+  return Object.keys(input)
+    .map((k) => input[Number(k)])
+    .filter((f): f is ForecastPoint => Boolean(f))
+    .sort((a, b) => a.horizon_minutes - b.horizon_minutes)
 }
 
 export interface SimulationInput {
@@ -218,12 +233,24 @@ export interface ScenarioComparison {
   [key: string]: any
 }
 
+/** The five rules the alert engine implements. */
+export type AlertType =
+  | 'threshold'
+  | 'rapid_rise'
+  | 'predicted_risk'
+  | 'communication_failure'
+  | 'sensor_fault'
+
 export interface Alert {
   id: number
   node_code?: string | null
   node_id?: number | null
   scenario_id?: number | null
-  alert_type: string
+  /**
+   * Each type carries a different `trigger_data` shape AND a different unit.
+   * Read it through `lib/alertTrigger.describeTrigger` rather than guessing keys.
+   */
+  alert_type: AlertType
   severity: 'information' | 'warning' | 'high' | 'critical'
   message: string
   trigger_data?: Record<string, unknown> | null
@@ -231,9 +258,9 @@ export interface Alert {
   acknowledged: boolean
   created_at: string
   /**
-   * Not returned by `/api/alerts/active` — that endpoint already yields only
-   * the active set, so filtering on it silently discards every alert. Optional
-   * here so nobody reintroduces that filter.
+   * Returned by `/api/alerts/active`, `/api/alerts/history` and the collection
+   * endpoint. The active endpoint filters on it server-side, so it is always
+   * true there.
    */
   is_active?: boolean
   acknowledged_at?: string | null

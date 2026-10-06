@@ -311,28 +311,46 @@ Two distinct prediction paths exist:
 > standard deviation across tree predictions is computable for free. This is the single most
 > impactful accuracy gap in the ML serving path.
 
-Note this path passes **10** features, not 11 — there is no `upstream_level_cm` key appended, so the
-list has length 10 while the models were trained with `n_features_in_ = 11`. scikit-learn raises on
-that mismatch; the exception is caught at `forecast_service.py:269-271` and the prediction falls back
-to `predicted = current_level_cm` with a `mithi_forecast_prediction_failed` log. **In practice this
-means the shipped Random Forest is very likely never actually used on the live path**, and every live
-forecast equals the mapped current level.
+> **This path previously never actually ran the Random Forest.** It built a **10**-key dict with no
+> `upstream_level_cm`, so `predict()` raised against a model trained with `n_features_in_ = 11`; the
+> exception was caught and the value fell back to `current_level_cm`. The cause was not a single typo
+> but four layered defects — a missing feature, a wrong value scale (raw centimetres where the model
+> expected mapped stage), a duplicated tail sample that zeroed `rise_rate` and `rainfall_trend`, and a
+> `PersistenceModel` installed as the runtime fallback. Full detail in
+> [`13-TESTING-AND-QUALITY.md`](13-TESTING-AND-QUALITY.md) §5.1.
+>
+> Both paths now build the vector through one ordered helper, `_feature_vector()`, driven by the
+> module-level `FEATURE_ORDER` that mirrors `train_forecast_models.FEATURE_ORDER`. Levels are mapped
+> through `map_demo_level()` first, and the upstream neighbour is resolved on that same scale.
+> Failures set `status = "model_error"` instead of `"ok"`, and `_verify_model_features()` logs an
+> `error` if any loaded model's `n_features_in_` disagrees with `FEATURE_ORDER` at startup.
 
-> **To confirm empirically:** compare a live `forecasts.predicted_level_cm` against
-> `simulation_input.mithi_water_level_cm`. If they are identical, the catch branch is the one firing.
-> There is no automated test covering this.
+**Verified** on a rising series — the three horizons now differ, where they previously collapsed to a
+single number:
 
-**Path B — `generate_forecasts_for_node`** (lines 292-367) is the architecturally complete version: it
-uses `_get_recent_readings` (which includes `simulated`), appends `upstream_level_cm` (via
-`NodeRelationship`), caches to Redis, and publishes events. It is reached only through
-`generate_forecasts_for_nodes`, which is **never called**.
+```
++15  187.0      +30  191.2      +60  205.8
+```
 
-### 3.8 Persistence fallback when no artefact exists
+**Path B — `generate_forecasts_for_node`** remains the architecturally complete version: it uses
+`_get_recent_readings` (which includes `simulated`) and is reached through
+`generate_forecasts_for_nodes`. It now shares the same corrected vector builder, so the two paths can
+no longer disagree about feature order or scale.
 
-`load_models()` (line 63) falls back to `PersistenceModel()` and logs
-`forecast_model_not_found` if a `.joblib` file is missing, or
-`forecast_model_load_failed` if loading raises. Either way the API degrades to "level stays the same"
-rather than crashing.
+### 3.8 No artefact means no forecast, not a fake one
+
+`load_models()` no longer installs `PersistenceModel()` when a `.joblib` is missing or fails to load.
+It logs `forecast_model_artifact_missing` / `forecast_model_load_failed` at `error` level, removes the
+horizon from `self._models`, and the prediction loops skip it via `if model is None: continue`.
+
+This is a deliberate reversal. `PersistenceModel.predict` returns `x[0]` — the current level — which is
+indistinguishable from a trained model that happened to predict no change. Serving it produced
+plausible-looking flat +15/+30/+60 numbers with `status = "ok"` and no warning anywhere, which is
+exactly the failure mode that hid the feature-vector bug for as long as it did. `PersistenceModel` is
+retained solely for **offline** evaluation inside `train_forecast_models.py`.
+
+`get_model_info()` correspondingly returns `available: false` with a `note` explaining that no
+forecast is produced, instead of a `persistence` entry that implied one was.
 
 ### 3.9 Redis forecast cache (write-only)
 

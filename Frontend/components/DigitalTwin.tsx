@@ -1,10 +1,11 @@
-'use client'
+﻿'use client'
 
 import { useEffect, useRef, useMemo } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { useSelector } from 'react-redux'
 import { RootState } from '@/store'
+import { forecastArray } from '@/types'
 import type { TimeStep } from '@/types'
 import { COLORS } from '@/lib/constants'
 
@@ -70,7 +71,7 @@ export default function DigitalTwin({
     const candidates = selectedNode ? nodes.filter((n) => n.node_code === selectedNode) : nodes
     let maxCm: number | null = null
     for (const node of candidates) {
-      const f = node.forecasts?.find((x) => x.horizon_minutes === timelineStep)
+      const f = forecastArray(node.forecasts).find((x) => x.horizon_minutes === timelineStep)
       const cm = f?.predicted_level_cm ?? (timelineStep === 0 ? node.latest_reading?.water_level_cm : null)
       if (typeof cm === 'number' && Number.isFinite(cm)) maxCm = maxCm === null ? cm : Math.max(maxCm, cm)
     }

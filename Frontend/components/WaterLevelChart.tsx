@@ -333,12 +333,29 @@ const tail = history.slice(-HISTORY_WINDOW)
 export function ModelMetricsChart({
   rows,
 }: {
-  rows: { label: string; mae: number; baseline: number }[]
+  /** `null` = the backend reported no figure for this horizon. Rows with a null
+   *  metric are dropped rather than charted as 0, which would read as a perfect
+   *  model. The caller shows an em dash in the table beside this chart. */
+  rows: { label: string; mae: number | null; baseline: number | null }[]
 }) {
+  const plottable = rows.filter((r) => r.mae !== null || r.baseline !== null)
+  if (!plottable.length) {
+    return (
+      <p className="muted" style={{ padding: '12px 0' }}>
+        No measured accuracy yet. The backend reports metrics only once a model is registered and
+        evaluated.
+      </p>
+    )
+  }
+  const data = plottable.map((r) => ({
+    label: r.label,
+    mae: r.mae,
+    baseline: r.baseline,
+  }))
   return (
     <div className="chart-wrap" style={{ height: 190 }}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={rows} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+        <BarChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
           <CartesianGrid strokeDasharray="2 4" stroke="rgba(140,161,173,0.14)" vertical={false} />
           <XAxis dataKey="label" tick={{ fontSize: 10, fill: COLORS.muted }} tickLine={false} axisLine={{ stroke: COLORS.border }} />
           <YAxis tick={{ fontSize: 10, fill: COLORS.muted }} tickLine={false} axisLine={false} width={40} />

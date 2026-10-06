@@ -343,9 +343,11 @@ This is the demo-critical path.
    │           source="iot-demo")
    │        ├─ needs ≥ MIN_READINGS_FOR_FORECAST (= max(LAGS)+2 = 8) iot readings
    │        ├─ maps EVERY historical reading through map_demo_level (levels list)
-   │        ├─ builds the 10-feature dict (+ upstream_level_cm = 0.0 appended)
-   │        ├─ for each of 15/30/60: model.predict([features]) → predicted_level_cm
+   │        ├─ resolves the upstream neighbour on the mapped scale (0.0 if none)
+   │        ├─ builds the ordered 11-feature vector via _feature_vector(FEATURE_ORDER)
+   │        ├─ for each of 15/30/60: model.predict([vector]) → predicted_level_cm
    │        │     lower_bound = max(0, pred - 10.0);  upper_bound = pred + 10.0
+   │        ├─ on failure: status="model_error" (never a silent persistence value)
    │        ├─ INSERT 3 Forecast rows (input_source="iot-demo", status="ok")
    │        ├─ COMMIT
    │        └─ publish "flood.forecast.updated" × 3

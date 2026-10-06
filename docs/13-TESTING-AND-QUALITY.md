@@ -238,65 +238,88 @@ to simulated` · `degraded is distinct from offline` · `alert severities sort m
 
 ## 5. Defects found, ranked by impact
 
-### 5.1 🔴 HIGH — the live forecast passes 10 features to an 11-feature model
+### 5.1 ✅ FIXED — the live forecast passed 10 features to an 11-feature model
 
-`train_forecast_models.py:185` writes 11 features per row, including
-`float(upstream[i]) if upstream is not None else 0.0` → `upstream_level_cm`.
-The bundles report `n_features_in_ = 11`.
+There were **four** separate defects here, and each one alone was enough to make live forecasts
+degenerate. They are grouped because the visible symptom was identical for all of them: +15/+30/+60
+all returned the same number, `status` still `"ok"`.
 
-`forecast_service.generate_mithi_forecasts()` (`forecast_service.py:250-268`) builds a **10-key**
-dict (lines 250-261) and calls `model.predict([list(features.values())])` with no upstream key
-appended.
+**1. Missing 11th feature (`upstream_level_cm`) — raised, then swallowed.**
+`generate_mithi_forecasts` built a **10-key** dict and called `model.predict()` with no upstream key.
+The bundles expect 11 (`n_features_in_ = 11`), so sklearn raised `X has 10 features, but
+RandomForestRegressor is expecting 11 features as input.` The `except` block set
+`predicted = current_level_cm`.
 
-scikit-learn's `RandomForestRegressor.predict` raises
-`ValueError: X has 10 features, but RandomForestRegressor is expecting 11 features as input.`
+**2. Wrong value scale — silent, nothing logged at all.**
+`_build_features` (the other live path) had all 11 keys but fed **raw physical centimetres (0–30)**
+to a model trained on **mapped Mithi stage (`storage_to_levels`, 120–245)**. This does not raise.
+sklearn returns a confident number derived from a distribution the model never saw. Arguably worse
+than defect 1, because nothing appears in any log.
 
-The exception is caught at lines 269-271:
-```python
-except Exception as exc:
-    logger.error("mithi_forecast_prediction_failed", horizon=horizon, error=str(exc))
-    predicted = current_level_cm
+**3. Duplicated tail sample — the momentum features zeroed.**
+`history` is the most recent `FEATURE_WINDOW_SIZE` readings, so it already ends with the sample
+being forecast. The code then did `levels.append(current_level_cm)`, making `levels[-1] ==
+levels[-2]` and `rainfall[-1] == rainfall[-2]`, which zeroed **both** `rise_rate` and
+`rainfall_trend`. Two of eleven features are momentum; with them dead the forest saw a flat series
+and returned the current level for every horizon.
+
+**4. `PersistenceModel` installed as the runtime fallback.**
+Where no artefact was found, `load_models` installed `PersistenceModel`, whose `predict` returns
+`x[0]` — the current level. It is now used **only** for offline evaluation inside
+`train_forecast_models.py`. `load_models` declines to predict instead and logs
+`forecast_model_artifact_missing` at `error` level.
+
+**The fix.** One ordered source of truth — `FEATURE_ORDER` plus `_feature_vector()` — called by both
+live paths after mapping every level through `map_demo_level`. `_mapped_upstream_level()` resolves
+the upstream neighbour on the same scale and returns `0.0` when there is no relationship, exactly
+what `train_forecast_models.build_dataset` used for the single-node case. Prediction failures now
+set `status="model_error"` rather than `"ok"`, `_verify_model_features()` checks each model's
+`n_features_in_` at load time, and `_auto_forecast_loop` re-checks `self._models` every cycle so an
+empty model set is loud instead of silent.
+
+**Verified.**
+
+```
+GET /api/flood/forecasts/FINAL-9671
+  +15  predicted= 187.0  bounds=[177.0 .. 197.0]  status=ok
+  +30  predicted= 191.2  bounds=[181.2 .. 201.2]  status=ok
+  +60  predicted= 205.8  bounds=[195.8 .. 215.8]  status=ok
 ```
 
-**Net effect: every live forecast silently equals the mapped current level — persistence — while the
-UI labels it `FORECAST` and the About page reports Random-Forest MAE.**
+Three distinct values on a rising series, matching an offline evaluation of the same vector
+(186.95 / 191.18 / 205.79), and stable across several 60-second cycles.
 
-**Why it is high-impact:** it is invisible. The pipeline "works", the numbers are plausible, the
-±10 cm bounds still render, and the `/api/about/model-info` response still shows the real RF metrics.
-The only trace is a `forecast_model`-adjacent ERROR line in the log.
+**A third writer.** Fixing the service was not sufficient on its own: forecasts kept reverting to a
+flat `177.8` for every horizon, in batches that appeared at a fixed offset from the auto-forecast
+loop and produced no log output at all. The cause was a **stray host process** —
+`uvicorn app.main:socket_app` on port 8001, started before the HTTP refactor, still running old code
+and writing into the same PostgreSQL database. It identified itself by reporting
+`"mqtt":"enabled"` in `/health`, a field removed long ago. Killing it stopped the flat batches
+immediately. **Lesson:** a second process sharing a database silently defeats any code fix, and
+`docker compose ps` will not show it because it is not a container.
 
-**How to confirm in 5 seconds:**
-```bash
-curl -s localhost:8000/api/flood/nodes | jq '.simulation_input.mithi_water_level_cm,
-   (.simulation_input.forecasts[] | select(.horizon_minutes==15) | .predicted_level_cm)'
-curl -s localhost:8000/api/flood/nodes | jq '.simulation_input.forecasts[].status'
-# if predicted == mithi for every horizon AND status == "ok", the catch branch is firing
-grep mithi_forecast_prediction_failed <your-log>
-```
 
-**Two candidate fixes:**
-1. Append `upstream_level_cm` to the features dict in `generate_mithi_forecasts` (mirroring
-   `_build_features` + `generate_forecasts_for_node`, which already do it at lines 313-317) — this
-   makes the RF actually run.
-2. Retrain with 10 features if the upstream feature is genuinely unneeded (it carries ~0.0–0.0007
-   importance, so dropping it would barely change predictions).
+### 5.2 ✅ FIXED — the 2D map rendered zero sensor markers
+Two conditions cancelled out exactly.
 
-Option 1 is right: it also makes the model match the `System-Architecture.md:278` feature list.
+The backend `/api/flood/nodes` filtered to `node_type == "physical"`, while `FloodMap.tsx` skipped
+physical nodes (`if (isPhysical) return`). Every iteration bailed on the first node, so
+`sensorsLayerRef` stayed empty — zero markers — while the HUD still rendered
+`{nodes.length} Monitoring Nodes`, asserting a count the map contradicted.
 
-### 5.2 🔴 HIGH — the 2D map renders zero sensor markers
+**Fixed** by plotting any node whose coordinates fall inside the study-area bounds, with the bounds
+mirrored from the backend's settings in `STUDY_AREA_BOUNDS`. The demo node is a Vadodara ESP32 about
+370 km from the corridor, and `maxBounds` is locked to the corridor, so plotting it unconditionally
+would drag the viewport off the map — that is why it was skipped in the first place. Out-of-area
+nodes remain visible in the sensor list and provenance panels. The HUD count now reports
+`nodes.filter(isInsideStudyArea)` so it can no longer disagree with the map.
 
-`flood_monitor.py:146-149` filters `/api/flood/nodes` to `node_type == "physical"`.
-`FloodMap.tsx:232-233` then does `if (isPhysical) return`.
+Also fixed in the same file: the HUD printed `Safe Levels` whenever `inundationMeta.maxDepth` was
+falsy, which includes the case where the step's layer **failed to load** — asserting safety from
+missing data. It now reads `No inundation data for this step`. `risk_level` no longer defaults to
+`'Severe'` when absent, and building height no longer invents `'Estimated ~12m'` for buildings with
+no OSM `height` tag (the backend supplies both `height_m` and `height_is_estimated`).
 
-The two conditions cancel exactly. No markers, no popups, no click-to-select on the map.
-
-**Fix (one line):** either drop the `node_type == "physical"` filter from the API, or remove the
-early return. The design intent — physical node in the provenance panels, virtual Mithi nodes as
-markers — is visible in the popup template (`"REAL IoT DEMO INPUT"` vs `"SIMULATED MITHI LOCATION"`)
-and in `types/index.ts:132-134` (`nodeSource`).
-
-The separate endpoint `/api/flood/map-layers?layer=sensors` returns all active physical nodes and is
-**not used by the frontend at all**.
 
 ### 5.3 🟠 MEDIUM — the rapid-rise alert can never clear
 
@@ -370,19 +393,44 @@ via WKT has no SRID metadata, so the GeoAlchemy2 lazy descriptor raises `Attribu
 
 **Fix:** use `func.ST_Y(...)` / `func.ST_X(...)`.
 
-### 5.9 🟡 LOW — the alert strip never shows a measured value
+### 5.9 ✅ FIXED — the alert surfaces never showed a measured value
+`trigger_data` is a JSON blob whose shape *and unit* depend on the alert type. The
+console read `current_value` / `value` / `threshold`, keys the engine has never emitted, so
+`CURRENT VALUE` was always an em dash and four of the five rule types showed nothing at all.
 
-Backend `trigger_data` uses `level_cm` / `rise_rate_cm_per_5min` / `predicted_level_cm` /
-`minutes_since_last_reading`. The frontend looks for `current_value` / `value` and
-`threshold` / `threshold_cm` (`AlertStrip.tsx:34-44`, `alerts/page.tsx:285-286`).
+Real shapes: `threshold` → `level_cm` + `threshold_cm`; `rapid_rise` → `rise_rate_cm_per_5min`;
+`predicted_risk` → `predicted_level_cm` + `horizon_minutes`; `communication_failure` →
+`minutes_since_last_reading`; `sensor_fault` → `rejected_count`. Three different units — the old
+hardcoded `cm` suffix was wrong for four of them.
 
-Only `threshold_cm` matches. Result: every alert shows its threshold but never its current value.
+**Fixed** with `lib/alertTrigger.describeTrigger()`, which maps each type to its real keys and an
+explicit unit, returning `null` for anything genuinely absent. `AlertStrip` and `alerts/page` both
+use it.
 
-### 5.10 🟡 LOW — scenario comparison tiles are always blank
+A second defect in the same component: `/api/alerts/active` did not return `is_active`, while
+`AlertStrip.tsx` filtered on `!a.acknowledged && a.is_active`. `undefined` is falsy, so the strip
+**never rendered at all**. The backend now returns the field (the query already filters on it).
 
-`scenarios/page.tsx:302-340` reads `baseline_peak_level_cm`, `baseline_mean_level_cm`,
-`scenario_peak_level_cm`, `scenario_mean_level_cm`, `scenario_flooded_area_m2`; the backend returns
-none of those keys (see `04-DATA-PIPELINES.md` §5).
+**Verified:** all 35 active alerts carry `is_active`.
+
+
+### 5.10 ✅ FIXED — scenario comparison tiles were always blank
+The console read `baseline_peak_level_cm`, `baseline_mean_level_cm`,
+`scenario_peak_level_cm`, `scenario_mean_level_cm` and `scenario_flooded_area_m2`; the backend
+returned only `node_comparisons`, `peak_level_difference_cm`, `average_level_difference_cm`,
+`summary` and `assumptions`. The real peak values sit at
+`node_comparisons[].peak_level_baseline_cm` / `.peak_level_scenario_cm` and were never read, so all
+four `BASELINE vs SCENARIO` tiles rendered an em dash even after a successful run.
+
+**Fixed** by deriving the five keys from the same per-node peaks in `scenario_service.compare()`, so
+the roll-ups cannot disagree with `node_comparisons`. `scenario_flooded_area_m2` is returned as an
+explicit `null` because no scenario area roll-up exists.
+
+That last point exposed a second bug: the console's `num()` helper was
+`isNum(Number(v)) ? Number(v) : null`, and `Number(null)` is `0`, which is finite — so an explicit
+JSON `null` became a rendered `0.000 km²`, a real-looking zero for a value never computed. `num()`
+now returns `null` for `null`/`undefined`/`''`.
+
 
 ### 5.11 🟡 LOW — the map legend and the map polygons use different risk colours
 
