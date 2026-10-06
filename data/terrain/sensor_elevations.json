@@ -1,0 +1,35 @@
+{
+  "_readme": "Ground elevation for each sensor node, extracted from data/terrain/dem_mithi.tif. Used by the flood simulation to convert water level (sensor-relative) to water surface elevation (absolute).",
+  "extracted_at": "2026-10-05T11:00:00Z",
+  "dem_source": "data/terrain/dem_mithi.tif",
+  "sensors": [
+    {
+      "node_code": "MITHI-IOT-01",
+      "latitude": 19.0713,
+      "longitude": 72.883,
+      "ground_elevation_m": 1.2,
+      "reference_datum": "channel bed at sensor mount"
+    },
+    {
+      "node_code": "MITHI-SIM-01",
+      "latitude": 19.06,
+      "longitude": 72.881,
+      "ground_elevation_m": 1.1,
+      "reference_datum": "estimated from DEM"
+    },
+    {
+      "node_code": "MITHI-SIM-02",
+      "latitude": 19.07,
+      "longitude": 72.883,
+      "ground_elevation_m": 1.5,
+      "reference_datum": "estimated from DEM"
+    },
+    {
+      "node_code": "MITHI-SIM-03",
+      "latitude": 19.08,
+      "longitude": 72.8855,
+      "ground_elevation_m": 1.9,
+      "reference_datum": "estimated from DEM"
+    }
+  ]
+}

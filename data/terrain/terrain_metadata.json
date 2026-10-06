@@ -1,0 +1,22 @@
+{
+  "crs": "EPSG:4326",
+  "bounds": {
+    "left": 72.86,
+    "bottom": 19.06,
+    "right": 72.89,
+    "top": 19.085
+  },
+  "width": 108,
+  "height": 90,
+  "resolution_deg": 0.0002777777777777778,
+  "resolution_m": 30.92,
+  "nodata": -9999.0,
+  "min_elevation_m": -0.89,
+  "max_elevation_m": 39.0,
+  "mean_elevation_m": 8.35,
+  "valid_pixels": 9708,
+  "total_pixels": 9720,
+  "source": "SRTM / Copernicus GLO-30",
+  "type": "terrain",
+  "limitations": "DEM is coarse (~30m). Not fine enough for individual drain/street/building-threshold accuracy."
+}

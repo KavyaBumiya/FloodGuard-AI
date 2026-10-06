@@ -1,0 +1,24 @@
+# Local secrets must never be baked into the image (COPY . . copies the tree).
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# VCS / editor
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Local runtime data
+media/
+*.log

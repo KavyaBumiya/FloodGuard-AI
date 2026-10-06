@@ -1,0 +1,52 @@
+{
+  "_readme": "Virtual sensor network. Every value here is SIMULATED and must be labelled as such in the UI (source = simulated). Propagation uses SIMPLIFIED SENSOR PROPAGATION: downstream(t+delay) = upstream(t) * attenuation + baseline_component. This is NOT a hydraulic model.",
+  "propagation_model": "SIMPLIFIED SENSOR PROPAGATION",
+  "default_delay_seconds": 60,
+  "head_attenuation": 0.9,
+  "rain_attenuation": 0.8,
+  "sensors": [
+    {
+      "node_code": "MITHI-SIM-01",
+      "name": "Mithi virtual BKC (upstream)",
+      "type": "virtual",
+      "role": "upstream",
+      "latitude": 19.06,
+      "longitude": 72.881,
+      "ground_elevation_m": 1.1,
+      "baseline_water_level_cm": 118.0,
+      "warning_threshold_cm": 175.0,
+      "active": true,
+      "source": "simulated"
+    },
+    {
+      "node_code": "MITHI-SIM-02",
+      "name": "Mithi virtual Saki Naka (midstream)",
+      "type": "virtual",
+      "role": "midstream",
+      "latitude": 19.07,
+      "longitude": 72.883,
+      "ground_elevation_m": 1.5,
+      "baseline_water_level_cm": 120.0,
+      "warning_threshold_cm": 180.0,
+      "active": true,
+      "source": "simulated"
+    },
+    {
+      "node_code": "MITHI-SIM-03",
+      "name": "Mithi virtual Kurla (downstream)",
+      "type": "virtual",
+      "role": "downstream",
+      "latitude": 19.08,
+      "longitude": 72.8855,
+      "ground_elevation_m": 1.9,
+      "baseline_water_level_cm": 122.0,
+      "warning_threshold_cm": 185.0,
+      "active": true,
+      "source": "simulated"
+    }
+  ],
+  "hops": [
+    { "upstream": "MITHI-SIM-01", "downstream": "MITHI-SIM-02", "delay_seconds": 60, "attenuation": 0.85, "distance_m": 1400.0 },
+    { "upstream": "MITHI-SIM-02", "downstream": "MITHI-SIM-03", "delay_seconds": 90, "attenuation": 0.75, "distance_m": 1500.0 }
+  ]
+}

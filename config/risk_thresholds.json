@@ -1,0 +1,64 @@
+{
+  "_readme": "Risk engine configuration. Weights and thresholds are prototype assumptions, not scientifically validated coefficients.",
+  "weights": {
+    "water_level": 0.35,
+    "rise_rate": 0.30,
+    "rainfall": 0.20,
+    "soil_saturation": 0.15
+  },
+  "thresholds": {
+    "water_level_cm": {
+      "low": 50,
+      "moderate": 100,
+      "high": 150,
+      "severe": 200
+    },
+    "rise_rate_cm_per_interval": {
+      "low": 1,
+      "moderate": 5,
+      "high": 15,
+      "severe": 30
+    },
+    "rainfall_mm_hr": {
+      "low": 5,
+      "moderate": 20,
+      "high": 50,
+      "severe": 80
+    },
+    "soil_saturation": {
+      "low": 0.3,
+      "moderate": 0.5,
+      "high": 0.7,
+      "severe": 0.85
+    }
+  },
+  "bands": {
+    "low": 0.0,
+    "moderate": 0.25,
+    "high": 0.50,
+    "severe": 0.75
+  },
+  "terrain_elevation_m": 1.2,
+  "defaults": {
+    "forecast_weights": {
+      "persistence": 0.5,
+      "linear_regression": 0.35,
+      "random_forest": 0.65
+    },
+    "device_stale_after_minutes": 5,
+    "model_name": "rule_based_v1",
+    "model_version": "rf_15min",
+    "assumptions": [
+      "Risk weights: 35% water level, 30% rise rate, 20% rainfall, 15% soil saturation",
+      "Thresholds are prototype assumptions - not calibrated for Mithi River",
+      "Model: rule_based_v1 (not ML-validated)",
+      "Synthetic data used for training - not operational gauges"
+    ],
+    "alerts": {
+      "rapid_rise_cm_per_interval": 5,
+      "threshold_hysteresis_cm": 10,
+      "predicted_high_horizons_minutes": [15, 30, 60]
+    }
+  },
+  "note": "These are prototype assumptions for hackathon demonstration. Not calibrated to real Mithi River hydraulics."
+}
