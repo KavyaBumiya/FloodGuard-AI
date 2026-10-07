@@ -1,0 +1,41 @@
+properties:
+  template:
+    containers:
+      - name: floodguard-backend
+        probes:
+          - type: Startup
+            httpGet:
+              path: /healthz
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+            successThreshold: 1
+
+          - type: Readiness
+            httpGet:
+              path: /healthz
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+            successThreshold: 1
+
+          - type: Liveness
+            httpGet:
+              path: /healthz
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+    scale:
+      minReplicas: 1
+      maxReplicas: 3
