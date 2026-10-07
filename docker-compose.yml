@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: floodguard-db
+    environment:
+      POSTGRES_USER: floodguard
+      POSTGRES_PASSWORD: floodguard
+      POSTGRES_DB: floodguard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U floodguard -d floodguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: floodguard-redis
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: floodguard-api
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://floodguard:floodguard@db:5432/floodguard
+      - REDIS_URL=redis://redis:6379/0
+      - APP_ENV=development
+      - FRONTEND_ORIGIN=http://localhost:3000
+      - IOT_REGISTRATION_TOKEN=your-registration-token-here
+      - DEMO_MODE_ENABLED=true
+    volumes:
+      - ./backend:/app
+      - ./models:/app/models
+      - ./config:/app/config
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "python -m scripts.release &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,86 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.mypy_cache
+.ruff_cache
+
+# Virtual environments
+venv
+env
+.env
+.env.local
+.env.*.local
+
+# Node.js (Frontend)
+Frontend/node_modules
+Frontend/.next
+Frontend/out
+Frontend/*.log
+Frontend/.vercel
+
+# Build artifacts
+dist
+build
+*.egg-info
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Large data files (handled separately)
+data/terrain/*.tif
+data/IMD/
+data/rainfall/
+
+# Test outputs
+backend/tests/__pycache__
+backend/.pytest_cache
+
+# Documentation
+docs/*.pdf
+*.md
+!README.md
+
+# Infrastructure (not needed in build context)
+infra/
+*.bicep
+*.sh
+
+# Deployment configs (not needed in image)
+.github/
+docker-compose.yml
+AZURE_DEPLOYMENT.md
+
+# Media (empty directory created in Dockerfile)
+media/
+
+# Frontend source (not needed for backend)
+Frontend/
