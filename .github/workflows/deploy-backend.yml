@@ -47,37 +47,49 @@ jobs:
             --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
       - name: Wait for deployment
-        run: sleep 30
-
-      - name: Verify Container App
         run: |
-          STATUS=$(az containerapp show \
-            --name ${{ env.CONTAINER_APP }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "properties.runningStatus" \
-            --output tsv)
+          echo "Waiting for Azure Container App to become healthy..."
 
-          echo "Container App status: $STATUS"
+          for i in {1..30}; do
+            STATUS=$(az containerapp show \
+              --name ${{ env.CONTAINER_APP }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --query "properties.runningStatus" \
+              --output tsv)
 
-          if [ "$STATUS" != "Running" ]; then
-            echo "Container App is not running."
-            exit 1
-          fi
+            echo "Attempt $i/30 - Container App status: $STATUS"
+
+            if [ "$STATUS" = "Running" ]; then
+              echo "Container App is running."
+              break
+            fi
+
+            if [ "$i" = "30" ]; then
+              echo "Container App did not become Running within 5 minutes."
+              exit 1
+            fi
+
+            sleep 10
+          done
 
       - name: Verify public health endpoint
         run: |
           echo "Checking ${{ env.HEALTH_URL }}"
 
-          for i in {1..10}; do
+          for i in {1..30}; do
+            echo "Health check attempt $i/30..."
+
             if curl --fail --silent --show-error ${{ env.HEALTH_URL }}; then
               echo ""
               echo "Backend is healthy."
               exit 0
             fi
 
-            echo "Health check attempt $i failed. Waiting 10 seconds..."
+            if [ "$i" = "30" ]; then
+              echo "Backend health check failed after 5 minutes."
+              exit 1
+            fi
+
+            echo "Backend is not ready yet. Waiting 10 seconds..."
             sleep 10
           done
-
-          echo "Backend health check failed."
-          exit 1
