@@ -1,0 +1,83 @@
+name: Deploy Backend to Azure
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  ACR_NAME: floodguardacr
+  IMAGE_NAME: floodguard-backend
+  RESOURCE_GROUP: Flood-guard-ai
+  CONTAINER_APP: floodguard-backend
+  HEALTH_URL: https://floodguard-backend.ashyplant-04472250.centralindia.azurecontainerapps.io/healthz
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -f backend/Dockerfile .
+
+      - name: Push Docker image
+        run: |
+          docker push \
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Deploy to Azure Container Apps
+        run: |
+          az containerapp update \
+            --name ${{ env.CONTAINER_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Wait for deployment
+        run: sleep 30
+
+      - name: Verify Container App
+        run: |
+          STATUS=$(az containerapp show \
+            --name ${{ env.CONTAINER_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query "properties.runningStatus" \
+            --output tsv)
+
+          echo "Container App status: $STATUS"
+
+          if [ "$STATUS" != "Running" ]; then
+            echo "Container App is not running."
+            exit 1
+          fi
+
+      - name: Verify public health endpoint
+        run: |
+          echo "Checking ${{ env.HEALTH_URL }}"
+
+          for i in {1..10}; do
+            if curl --fail --silent --show-error ${{ env.HEALTH_URL }}; then
+              echo ""
+              echo "Backend is healthy."
+              exit 0
+            fi
+
+            echo "Health check attempt $i failed. Waiting 10 seconds..."
+            sleep 10
+          done
+
+          echo "Backend health check failed."
+          exit 1

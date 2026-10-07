@@ -155,4 +155,11 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    exit_code = asyncio.run(main())
+
+    if exit_code == 0 and len(sys.argv) > 1:
+        import subprocess
+
+        raise SystemExit(subprocess.call(sys.argv[1:]))
+
+    raise SystemExit(exit_code)
