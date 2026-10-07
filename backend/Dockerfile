@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Runtime stage
@@ -42,8 +42,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     libgdal36 \
-    libnetcdf19 \
-    libhdf5-103 \
+    libnetcdf-dev \
+    libhdf5-dev \
     libopenblas0 \
     gdal-bin \
     curl \
@@ -56,10 +56,10 @@ COPY --from=builder /install /usr/local
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Copy application code
-COPY --chown=appuser:appuser app/ ./app/
-COPY --chown=appuser:appuser alembic/ ./alembic/
-COPY --chown=appuser:appuser alembic.ini .
-COPY --chown=appuser:appuser scripts/ ./scripts/
+COPY --chown=appuser:appuser backend/app/ ./app/
+COPY --chown=appuser:appuser backend/alembic/ ./alembic/
+COPY --chown=appuser:appuser backend/alembic.ini .
+COPY --chown=appuser:appuser backend/scripts/ ./scripts/
 COPY --chown=appuser:appuser config/ ./config/
 COPY --chown=appuser:appuser models/ ./models/
 COPY --chown=appuser:appuser data/ ./data/
