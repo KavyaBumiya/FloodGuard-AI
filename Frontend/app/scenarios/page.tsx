@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { useDispatch } from 'react-redux'
 import { Info, Play, RotateCcw } from 'lucide-react'
-import api from '@/lib/api'
+import api, { describeApiError, isAuthError } from '@/lib/api'
 import { COLORS, RISK_META, riskLevel } from '@/lib/constants'
 import { EM_DASH, fmtArea, fmtNum, isNum } from '@/lib/format'
 import { useAppState } from '@/hooks/useFloodguard'
@@ -102,7 +102,10 @@ export default function ScenariosPage() {
     api
       .listScenarios(10)
       .then((r) => setPast(r.scenarios ?? []))
-      .catch(() => setPast([]))
+      .catch((err: Error) => {
+        setPast([])
+        if (isAuthError(err)) setError(describeApiError(err))
+      })
   }, [])
 
   useEffect(() => {

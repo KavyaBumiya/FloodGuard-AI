@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import api from '@/lib/api'
+import api, { describeApiError, isAuthError } from '@/lib/api'
 import type { StudyAreaResponse } from '@/lib/api'
 import { SOURCE_META } from '@/lib/constants'
 import { DataSourceBadge, ErrorState, PageHeader, PanelTitle, SkeletonRows } from '@/components/ui/Primitives'
@@ -46,18 +46,23 @@ export default function DataPage() {
         if (dead) return
         setSources(Array.isArray(r?.data_sources) ? r.data_sources : [])
       })
-      .catch((err: Error) => !dead && setError(`Data sources unavailable: ${err.message}`))
+      .catch((err: Error) => !dead && setError(`Data sources unavailable: ${describeApiError(err)}`))
 
-    api.assumptions().then((a) => !dead && setAssumptions(a)).catch(() => {})
+    // Secondary provenance panels degrade to their "unavailable" copy — except
+    // on 401/403, which is a misconfiguration and must be visible.
+    const authOnly = (err: Error) => {
+      if (!dead && isAuthError(err)) setError(describeApiError(err))
+    }
+    api.assumptions().then((a) => !dead && setAssumptions(a)).catch(authOnly)
     api
       .honestyNote()
       .then((r) => !dead && setHonesty(r?.note ?? ''))
-      .catch(() => {})
-    api.studyArea().then((s) => !dead && setStudyArea(s)).catch(() => {})
+      .catch(authOnly)
+    api.studyArea().then((s) => !dead && setStudyArea(s)).catch(authOnly)
     api
       .modelInfo()
       .then((m) => !dead && setModelInfo(m as Record<string, unknown>))
-      .catch(() => {})
+      .catch(authOnly)
       .finally(() => !dead && setLoading(false))
     return () => {
       dead = true

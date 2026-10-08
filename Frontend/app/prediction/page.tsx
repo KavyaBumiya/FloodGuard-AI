@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useDispatch } from 'react-redux'
-import api from '@/lib/api'
+import api, { describeApiError, isAuthError, isNotFound } from '@/lib/api'
 import { FORECAST_HORIZONS, RISK_META, hasRecentLiveIoTReading, riskLevel } from '@/lib/constants'
 import { EM_DASH, fmtNum, isNum, latestPerHorizon, timeAgo, trend, trendWord } from '@/lib/format'
 import { useAppState } from '@/hooks/useFloodguard'
@@ -37,8 +37,15 @@ export default function PredictionPage() {
   const hasLiveReading = selected?.node_type === 'virtual' || hasRecentLiveIoTReading(selected)
 
   useEffect(() => {
-    api.modelInfo().then(setModelInfo).catch(() => setModelInfo(null))
-  }, [])
+    api
+      .modelInfo()
+      .then(setModelInfo)
+      .catch((err: Error) => {
+        setModelInfo(null)
+        // Missing metadata is normal (em dash / fallback copy); 401/403 is not.
+        if (isAuthError(err)) dispatch(actions.errorRaised(describeApiError(err)))
+      })
+  }, [dispatch])
 
   // Risk detail for the selected node. The node list already carries
   // `current_risk`, so this only refetches when the selection changes.
@@ -50,8 +57,10 @@ export default function PredictionPage() {
       .then((detail) => {
         if (!dead) dispatch(actions.riskLoaded((detail.current_risk as RiskResult) ?? null))
       })
-      .catch(() => {
-        /* risk is optional detail - the page stays usable without it */
+      .catch((err: Error) => {
+        /* risk is optional detail — the page stays usable without it */
+        if (!dead && isAuthError(err)) dispatch(actions.errorRaised(describeApiError(err)))
+        if (!dead && isNotFound(err)) dispatch(actions.riskLoaded(null))
       })
     return () => {
       dead = true

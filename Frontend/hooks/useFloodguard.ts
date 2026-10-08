@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import api from '@/lib/api'
+import api, { describeApiError, isAuthError, isNotFound } from '@/lib/api'
 import { getSocket } from '@/lib/socket'
 import { actions, RootState } from '@/store'
 import type { ConnectionState } from '@/types'
@@ -36,29 +36,69 @@ const POLL_MS = 3000
 export function useFloodguardData() {
   const dispatch = useDispatch()
 
+  const setConnection = useCallback(
+    (state: ConnectionState) => dispatch(actions.connectionChanged(state)),
+    [dispatch],
+  )
+
   const refreshAll = useCallback(async () => {
+    let problem: string | null = null
+
+    // Core: node list + corridor summary. If either fails the dashboard has
+    // nothing trustworthy to render, so it reports the failure instead.
     try {
-      const [nodes, summary, active, impacts, demo] = await Promise.all([
-        api.nodes(),
-        api.summary(),
-        api.activeAlerts(),
-        api.impactSummary(),
-        api.demoStatus().catch(() => null),
-      ])
+      const [nodes, summary] = await Promise.all([api.nodes(), api.summary()])
       dispatch(actions.nodesLoaded(nodes.nodes ?? []))
       if (nodes.simulation_input) {
         dispatch(actions.simulationInputLoaded(nodes.simulation_input))
       }
       dispatch(actions.summaryLoaded(summary))
-      dispatch(actions.alertsLoaded(active.alerts ?? []))
-      dispatch(actions.impactsLoaded(impacts))
-      if (demo) dispatch(actions.modeChanged(demo.mode))
-      return true
     } catch (err) {
-      dispatch(actions.errorRaised((err as Error).message))
+      problem = describeApiError(err)
+    }
+
+    // Secondary panels: one failing panel must not blank the dashboard. A 404
+    // is "no data for this step" — an honest empty state, not an error. A 401/403
+    // is never swallowed (see isAuthError below).
+    const [active, impacts, demo] = await Promise.allSettled([
+      api.activeAlerts(),
+      api.impactSummary(),
+      api.demoStatus(),
+    ])
+
+    if (active.status === 'fulfilled') {
+      dispatch(actions.alertsLoaded(active.value.alerts ?? []))
+    } else if (!isNotFound(active.reason)) {
+      problem ??= isAuthError(active.reason)
+        ? describeApiError(active.reason)
+        : `Active alerts unavailable: ${describeApiError(active.reason)}`
+      dispatch(actions.alertsLoaded([]))
+    }
+
+    if (impacts.status === 'fulfilled') {
+      dispatch(actions.impactsLoaded(impacts.value))
+    } else if (!isNotFound(impacts.reason)) {
+      problem ??= `Impact summary unavailable: ${describeApiError(impacts.reason)}`
+    }
+
+    if (demo.status === 'fulfilled') {
+      dispatch(actions.modeChanged(demo.value.mode))
+    }
+
+    if (problem) {
+      dispatch(actions.errorRaised(problem))
+      // /healthz decides what the operator is told: a reachable backend with a
+      // failing endpoint is DEGRADED; an unreachable one is OFFLINE.
+      try {
+        await api.healthz()
+        setConnection('degraded')
+      } catch {
+        setConnection('offline')
+      }
       return false
     }
-  }, [dispatch])
+    return true
+  }, [dispatch, setConnection])
 
   const refreshRisk = useCallback(
     async (nodeCode: string | null) => {
@@ -66,15 +106,13 @@ export function useFloodguardData() {
       try {
         const node = await api.node(nodeCode)
         dispatch(actions.riskLoaded(node.current_risk ?? null))
-      } catch {
-        /* risk is optional detail — a miss must not break the page */
+      } catch (err) {
+        // Risk is optional detail — a miss must not break the page, but an
+        // auth failure is a configuration problem and must not look like
+        // "no risk data".
+        if (isAuthError(err)) dispatch(actions.errorRaised(describeApiError(err)))
       }
     },
-    [dispatch],
-  )
-
-  const setConnection = useCallback(
-    (state: ConnectionState) => dispatch(actions.connectionChanged(state)),
     [dispatch],
   )
 
@@ -127,9 +165,9 @@ export function useFloodguardData() {
     const timer = setInterval(() => {
       void refreshAll().then((ok) => {
         if (disposed) return
-        if (!ok) setConnection('offline')
-        else if (socket.connected) setConnection('live')
-        else setConnection('degraded')
+        // On failure refreshAll has already probed /healthz and chosen
+        // DEGRADED (backend up, endpoint failing) or OFFLINE (backend down).
+        if (ok) setConnection(socket.connected ? 'live' : 'degraded')
       })
     }, POLL_MS)
 

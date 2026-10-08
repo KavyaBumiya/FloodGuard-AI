@@ -69,7 +69,7 @@ test('riskColor is driven by the same table as the badge', () => {
 })
 
 test('simulated data is never labelled live', () => {
-  assert.equal(SOURCE_META.iot.label, 'LIVE HARDWARE')
+  assert.equal(SOURCE_META.iot.label, 'REAL IoT INPUT')
   assert.equal(SOURCE_META.simulated.label, 'SIMULATED')
   assert.notEqual(SOURCE_META.simulated.label, SOURCE_META.iot.label)
   // Distinct colours too, so the two cannot be confused at a glance.

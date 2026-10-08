@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import api from '@/lib/api'
+import api, { isNotFound } from '@/lib/api'
 import { latestPerHorizon } from '@/lib/format'
 import type { ForecastPoint, SensorReading } from '@/types'
 
@@ -61,9 +61,17 @@ export function useNodeSeries(nodeCode: string | null | undefined, pollMs = POLL
         setLastGoodAt(new Date().toISOString())
       } catch (err) {
         if (dead) return
-        // Keep the previous series on screen; a transient failure should not
-        // blank a chart the operator is reading.
-        setError((err as Error).message)
+        if (isNotFound(err)) {
+          // The backend has no series for this node yet. That is an empty
+          // state ("waiting for telemetry"), not a failure of the feed.
+          setHistory([])
+          setForecasts([])
+          setError(null)
+        } else {
+          // Keep the previous series on screen; a transient failure should not
+          // blank a chart the operator is reading.
+          setError((err as Error).message)
+        }
       } finally {
         if (!dead) setSettled(key)
       }

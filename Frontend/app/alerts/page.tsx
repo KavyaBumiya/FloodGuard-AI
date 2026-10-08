@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCheck, ChevronDown } from 'lucide-react'
-import api from '@/lib/api'
+import api, { describeApiError, isAuthError } from '@/lib/api'
 import { ALERT_SEVERITY_ORDER, RISK_META, riskLevel } from '@/lib/constants'
 import { EM_DASH, fmtIsoHm, isNum, timeAgo } from '@/lib/format'
 import { describeTrigger } from '@/lib/alertTrigger'
@@ -44,13 +44,17 @@ export default function AlertsPage() {
       })
       .catch((err: Error) => {
         setHistory([])
-        setError(`Alert history unavailable: ${err.message}`)
+        setError(`Alert history unavailable: ${describeApiError(err)}`)
       })
       .finally(() => setLoading(false))
     api
       .networkHealth()
       .then((r) => setHealth(r as Health))
-      .catch(() => setHealth(null))
+      .catch((err: Error) => {
+        setHealth(null)
+        // 401/403 is a configuration problem, not "no health data".
+        if (isAuthError(err)) setError(describeApiError(err))
+      })
   }, [])
 
   useEffect(reload, [reload])
@@ -61,7 +65,7 @@ export default function AlertsPage() {
       await api.acknowledgeAlert(id)
       reload()
     } catch (err) {
-      setError((err as Error).message)
+      setError(describeApiError(err))
     } finally {
       setBusy(false)
     }
@@ -73,7 +77,7 @@ export default function AlertsPage() {
       await api.acknowledgeAll()
       reload()
     } catch (err) {
-      setError((err as Error).message)
+      setError(describeApiError(err))
     } finally {
       setBusy(false)
     }

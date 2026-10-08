@@ -15,3 +15,8 @@ node_modules
 .DS_Store
 .vercel
 .env*
+# Committed env files carry ONLY the public API base URL (no secrets).
+# Anything matching .env*.local (tokens, machine-specific overrides) stays ignored.
+!.env.example
+!.env.development
+!.env.production
