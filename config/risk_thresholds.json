@@ -8,10 +8,10 @@
   },
   "thresholds": {
     "water_level_cm": {
-      "low": 50,
-      "moderate": 100,
-      "high": 150,
-      "severe": 200
+      "low": 20,
+      "moderate": 10,
+      "high": 5,
+      "severe": 0
     },
     "rise_rate_cm_per_interval": {
       "low": 1,

@@ -255,6 +255,7 @@ def assess_current_risk(
         WATER_LEVEL_MODERATE_CM,
         WATER_LEVEL_HIGH_CM,
         WATER_LEVEL_SEVERE_CM,
+        inverse=True,
     )
     wl_contrib = wl_norm * WEIGHT_WATER_LEVEL
     components.append(RiskComponent(
