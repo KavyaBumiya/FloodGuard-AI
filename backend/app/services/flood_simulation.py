@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -436,48 +437,60 @@ class FloodSimulationEngine:
         if grid is None:
             return depth_grid
         rows, cols = grid["rows"], grid["cols"]
-        elevation = np.array(grid["elevation"])
-        
-        # Find river cells (lowest elevation along river centerline)
-        river_line = self._get_river_centerline()
-        river_cells = []
-        
-        for i in range(rows):
-            for j in range(cols):
-                if np.isnan(elevation[i][j]):
-                    continue
-                cell_pt = Point(grid["lons"][i][j], grid["lats"][i][j])
-                if river_line.distance(cell_pt) < self.connectivity_buffer_m / 111000:
-                    river_cells.append((i, j))
+        elevation = np.array(grid["elevation"], dtype=float)
+        lons = np.array(grid["lons"], dtype=float)
+        lats = np.array(grid["lats"], dtype=float)
 
-        if not river_cells:
+        # Distance from every grid cell to the river centreline, vectorised.
+        # LineString.distance() is the planar distance to the nearest *segment*,
+        # not to the nearest vertex, so this computes point-to-segment to match.
+        # Previously this built a Shapely Point per cell and called distance() on
+        # it - ~9700 geometry calls per simulation, which dominated the runtime.
+        coords = np.asarray(self._get_river_centerline().coords, dtype=float)
+        threshold = self.connectivity_buffer_m / 111000.0
+        px = lons.ravel()
+        py = lats.ravel()
+        nearest = np.full(px.shape, np.inf, dtype=float)
+
+        for k in range(len(coords) - 1):
+            ax, ay = coords[k]
+            bx, by = coords[k + 1]
+            dx, dy = bx - ax, by - ay
+            seg_sq = dx * dx + dy * dy
+            if seg_sq == 0.0:
+                dist = np.hypot(px - ax, py - ay)
+            else:
+                t = ((px - ax) * dx + (py - ay) * dy) / seg_sq
+                np.clip(t, 0.0, 1.0, out=t)
+                dist = np.hypot(px - (ax + t * dx), py - (ay + t * dy))
+            np.minimum(nearest, dist, out=nearest)
+
+        land = ~np.isnan(elevation.ravel())
+        river_flat = np.flatnonzero(land & (nearest < threshold))
+        if river_flat.size == 0:
             return depth_grid
 
-        # Flood fill from river cells
+        river_rows = river_flat // cols
+        river_cols = river_flat - river_rows * cols
+
+        # Flood fill from river cells, 4-connected. Water crosses into a cell
+        # only where its surface clears the terrain. `wet` is precomputed so the
+        # fill does no per-neighbour NaN checks.
+        wet = (~np.isnan(elevation)) & (water_surface > elevation)
         flooded = np.zeros((rows, cols), dtype=bool)
-        queue = list(river_cells)
-        
-        for i, j in river_cells:
-            flooded[i, j] = True
+        flooded[river_rows, river_cols] = True
 
-        # 4-connected neighbors
-        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        
+        # deque.popleft() is O(1); list.pop(0) was O(n), making the fill
+        # quadratic in cell count.
+        queue = deque(zip(river_rows.tolist(), river_cols.tolist()))
         while queue:
-            i, j = queue.pop(0)
-            
-            for di, dj in neighbors:
-                ni, nj = i + di, j + dj
-                if 0 <= ni < rows and 0 <= nj < cols:
-                    if not flooded[ni, nj] and not np.isnan(elevation[ni, nj]):
-                        # Water can flow if adjacent cell is lower or equal to water surface
-                        if water_surface[ni, nj] > elevation[ni, nj]:
-                            flooded[ni, nj] = True
-                            queue.append((ni, nj))
+            i, j = queue.popleft()
+            for ni, nj in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+                if 0 <= ni < rows and 0 <= nj < cols and wet[ni, nj] and not flooded[ni, nj]:
+                    flooded[ni, nj] = True
+                    queue.append((ni, nj))
 
-        # Apply mask
-        masked_depth = np.where(flooded, depth_grid, 0.0)
-        return masked_depth
+        return np.where(flooded, depth_grid, 0.0)
 
     def _classify_depth_risk(self, depth: float) -> str:
         """Classify depth into risk level."""

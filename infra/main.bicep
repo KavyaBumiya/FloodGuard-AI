@@ -225,7 +225,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
             name: 'http-scaling'
             http: {
               metadata: {
-                concurrentRequests: '50'
+                // Matches the deployed value. The container runs one event loop,
+                // so letting the platform queue far more requests than it can
+                // serve just converts load into latency and dropped WebSockets.
+                concurrentRequests: '10'
               }
             }
           }
