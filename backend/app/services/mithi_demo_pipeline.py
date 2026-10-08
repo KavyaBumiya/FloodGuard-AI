@@ -93,7 +93,7 @@ async def process_real_demo_input() -> None:
                 "payload": {
                     "input_source": "iot",
                     "simulation_source": "iot-demo",
-                    "label": "MITHI RIVER DIGITAL TWIN · DRIVEN BY REAL IoT DEMO INPUT",
+                    "label": "MITHI RIVER DIGITAL TWIN · DRIVEN BY LIVE IoT INPUT",
                     "steps": steps,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },

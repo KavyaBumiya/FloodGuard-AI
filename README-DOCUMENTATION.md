@@ -98,7 +98,7 @@ Full walkthrough, the quick-tunnel URL caveat, and the security implications:
 1. **One real input drives everything.** A physical ESP32 registered via
    `POST /api/iot/devices/register`. Its water level is mapped linearly onto a Mithi reference level
    by 5 configurable parameters (`0→30 cm` physical ⇒ `118→220 cm` Mithi by default). This is
-   disclosed as **"DEMO CALIBRATION / SIMULATION MAPPING"** everywhere it appears.
+   disclosed as **"CONFIGURED CALIBRATION / SIMULATION MAPPING"** everywhere it appears.
 
 2. **No live IoT reading ⇒ "WAITING FOR REAL IoT INPUT".** Never invented numbers. Enforced by a
    5-minute freshness gate at four layers (backend, API response shape, frontend helper, UI copy).

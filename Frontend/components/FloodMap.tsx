@@ -310,10 +310,10 @@ const forecastsHtml = forecastArray(node.forecasts)
           <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #203541; padding-bottom:6px; margin-bottom:8px;">
             <b style="font-size:13px; color:#16d6d2;">${safeNodeCode}</b>
             <span style="font-size:9px; background:${isPhysical ? '#0e4a4a' : '#2d1f47'}; color:${isPhysical ? COLORS.accent : '#c2a6ff'}; padding:2px 6px; border-radius:4px; font-weight:700;">
-              ${isPhysical ? 'REAL IoT DEMO INPUT' : 'SIMULATED MITHI LOCATION'}
+              ${isPhysical ? 'LIVE IoT INPUT' : 'SIMULATED MITHI LOCATION'}
             </span>
           </div>
-          <div style="font-size:11px; margin-bottom:4px; color:#8ca1ad;">${isPhysical ? 'Vadodara Physical Sensor' : safeNodeName}</div>
+          <div style="font-size:11px; margin-bottom:4px; color:#8ca1ad;">${isPhysical ? 'Physical IoT Sensor' : safeNodeName}</div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:8px 0; background:#071219; padding:6px; border-radius:6px;">
             <div>
               <div style="font-size:9px; color:#8ca1ad;">WATER LEVEL</div>

@@ -231,10 +231,10 @@ fails.
 
   "simulation_input": {
     "status": "live",                      // or "waiting"
-    "label": "REAL IoT DEMO INPUT",
-    "location_label": "Vadodara Physical Sensor",
+    "label": "LIVE IoT INPUT",
+    "location_label": "Physical IoT Sensor",
     "simulation_label": "MITHI RIVER DIGITAL TWIN - Mumbai Simulation",
-    "driver_label": "Driven by Real IoT Demo Input",
+    "driver_label": "Driven by Live IoT Input",
     "node_code": "VAD-ESP32-01",
     "water_level_cm": 14.5,                // physical
     "rainfall_mm_hr": 6.2,                 // physical
@@ -243,11 +243,11 @@ fails.
     "forecasts": [ … ],                    // input_source = "iot-demo"
     "forecast_status": "ok",               // or insufficient_live_iot_data | waiting_for_iot
     "timestamp": "…",
-    "mapping": { "label":"DEMO CALIBRATION / SIMULATION MAPPING",
+    "mapping": { "label":"CONFIGURED CALIBRATION / SIMULATION MAPPING",
                  "physical_min_cm":0.0, "physical_max_cm":30.0,
                  "mithi_min_cm":118.0, "mithi_max_cm":220.0, "rainfall_factor":0.8,
                  "configured_node_code": null,
-                 "note":"Configurable demonstration calibration; not a Vadodara-to-Mumbai hydraulic relationship." } } }
+                 "note":"Configurable calibration for mapping physical sensor input into the Mithi simulation; not a physical hydraulic transfer." } } }
 ```
 
 ### `GET /api/flood/nodes/{node_code}`
