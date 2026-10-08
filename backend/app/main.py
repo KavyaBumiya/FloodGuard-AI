@@ -65,10 +65,8 @@ async def _start_engines() -> None:
     """Start background engines, isolating failures so one bad engine cannot
     stop telemetry from being ingested."""
     from app.services.alert_engine import alert_engine
-    from app.services.forecast_service import forecast_service
 
     starters = [
-        ("forecast_service", forecast_service.start_auto_forecast),
         ("alert_engine", alert_engine.start),
     ]
     for name, start in starters:
@@ -83,10 +81,8 @@ async def _start_engines() -> None:
 
 async def _stop_engines() -> None:
     from app.services.alert_engine import alert_engine
-    from app.services.forecast_service import forecast_service
 
     for name, stop in (
-        ("forecast_service", forecast_service.stop_auto_forecast),
         ("alert_engine", alert_engine.stop),
     ):
         try:

@@ -79,6 +79,7 @@ export default function FloodMap({
   const nodes = useSelector((s: RootState) => s.floodguard.nodes)
   const selectedNode = useSelector((s: RootState) => s.floodguard.selectedNode)
   const timelineStep = useSelector((s: RootState) => s.floodguard.timelineStep) as TimeStep
+  const simulationInput = useSelector((s: RootState) => s.floodguard.simulationInput)
 
   const [waterwaysData, setWaterwaysData] = useState<GeoJsonFeatureCollection | null>(null)
   const [inundationData, setInundationData] = useState<GeoJsonFeatureCollection | null>(null)
@@ -227,11 +228,18 @@ export default function FloodMap({
         if (dead.current) return
         setInundationData(null)
         setInundationMeta(null)
-        setLayerError(
-          isNotFound(err)
-            ? 'No inundation layer has been generated yet. Send IoT telemetry to create the flood simulation.'
-            : 'Inundation layer request failed. Check the backend connection.',
-        )
+        if (isNotFound(err)) {
+          const status = simulationInput?.forecast_status
+          if (status === 'insufficient_live_iot_data') {
+            setLayerError('Collecting data — need 8+ IoT readings for forecast. Keep telemetry running.')
+          } else if (status === 'waiting_for_iot') {
+            setLayerError('Waiting for IoT telemetry — connect ESP32 to start flood simulation.')
+          } else {
+            setLayerError('No inundation layer has been generated yet. Send IoT telemetry to create the flood simulation.')
+          }
+        } else {
+          setLayerError('Inundation layer request failed. Check the backend connection.')
+        }
         setLoadedLayerKey(requestKey)
       })
     load()
