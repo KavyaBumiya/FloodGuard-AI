@@ -35,7 +35,7 @@ from app.models.floodguard import (
     RejectedReading,
     SourceType,
 )
-from app.services.flood_risk import calculate_rise_rate
+from app.services.flood_risk import calculate_rise_rate, map_physical_to_mithi
 
 
 logger = structlog.get_logger()
@@ -53,11 +53,14 @@ _ALERT_CFG = _DEFAULTS.get("alerts", {})
 _WL = _RISK_CFG.get("thresholds", {}).get("water_level_cm", {})
 
 THRESHOLDS = {
+    # Water-level thresholds are on the INVERTED physical probe scale
+    # (config/risk_thresholds.json: 12+ cm = dry/low, <6 cm = flood alert),
+    # so alerts fire when the reading falls BELOW them.
     "water_level_warning_cm": float(
-        _WL.get("high", 150.0)
+        _WL.get("low", 12.0)
     ),
     "water_level_critical_cm": float(
-        _WL.get("severe", 200.0)
+        _WL.get("moderate", 6.0)
     ),
     "rapid_rise_cm_per_5min": float(
         _ALERT_CFG.get("rapid_rise_cm_per_interval", 15.0)
@@ -165,7 +168,9 @@ class AlertEngine:
         async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(SensorNode).where(
-                    SensorNode.is_active.is_(True)
+                    # Access the table column directly to avoid the ORM
+                    # descriptor's recursive type inference in Pyright.
+                    SensorNode.__table__.c.is_active.is_(True)
                 )
             )
 
@@ -309,21 +314,50 @@ class AlertEngine:
 
         level = reading.water_level_cm
 
-        warning_thresh = (
-            node.warning_threshold_cm
-            or THRESHOLDS["water_level_warning_cm"]
+        # Physical probe readings are inverted (0 cm = flooded, 30 cm = dry);
+        # simulated and scenario readings are ascending Mithi-stage cm.
+        inverted = reading.source not in (
+            SourceType.SIMULATED.value,
+            SourceType.SCENARIO.value,
         )
 
-        critical_thresh = THRESHOLDS[
-            "water_level_critical_cm"
-        ]
+        if inverted:
+            warning_thresh = float(
+                node.warning_threshold_cm
+                or THRESHOLDS["water_level_warning_cm"]
+            )
+            critical_thresh = THRESHOLDS["water_level_critical_cm"]
+            if warning_thresh <= critical_thresh:
+                # A stale per-device override (set under the old ascending
+                # semantics) would swallow the HIGH band; the config wins.
+                warning_thresh = THRESHOLDS["water_level_warning_cm"]
+            breaches_critical = level < critical_thresh
+            breaches_warning = level < warning_thresh
+            direction = "below"
+        else:
+            warning_thresh = (
+                float(node.warning_threshold_cm)
+                if node.node_type == "virtual" and node.warning_threshold_cm
+                else map_physical_to_mithi(
+                    THRESHOLDS["water_level_warning_cm"]
+                )
+            )
+            critical_thresh = max(
+                map_physical_to_mithi(
+                    THRESHOLDS["water_level_critical_cm"]
+                ),
+                warning_thresh,
+            )
+            breaches_critical = level >= critical_thresh
+            breaches_warning = level >= warning_thresh
+            direction = "exceeds"
 
-        if level >= critical_thresh:
+        if breaches_critical:
             severity = AlertSeverity.CRITICAL
             threshold_type = "critical"
             threshold_value = critical_thresh
 
-        elif level >= warning_thresh:
+        elif breaches_warning:
             severity = AlertSeverity.HIGH
             threshold_type = "warning"
             threshold_value = warning_thresh
@@ -346,7 +380,8 @@ class AlertEngine:
 
         message = (
             f"{node.node_code} water level "
-            f"{level:.0f} cm exceeds "
+            f"{level:.0f} cm "
+            f"{direction} "
             f"{threshold_type} threshold "
             f"({threshold_value:.0f} cm)"
         )
@@ -445,6 +480,12 @@ class AlertEngine:
             reading.water_level_cm,
             previous.water_level_cm,
             interval_seconds,
+            # Physical probe: a falling reading means the water is rising.
+            inverted=reading.source
+            not in (
+                SourceType.SIMULATED.value,
+                SourceType.SCENARIO.value,
+            ),
         )
 
         threshold = THRESHOLDS[
@@ -545,25 +586,25 @@ class AlertEngine:
 
         forecasts = result.scalars().all()
 
+        # Forecasts are stored on the ascending Mithi stage scale, so the
+        # inverted physical thresholds are mapped onto that scale first.
+        warning_mithi = map_physical_to_mithi(
+            THRESHOLDS["water_level_warning_cm"]
+        )
+        critical_mithi = map_physical_to_mithi(
+            THRESHOLDS["water_level_critical_cm"]
+        )
+
+        breaches: dict[int, AlertSeverity] = {}
         for forecast in forecasts:
+            if forecast.predicted_level_cm >= critical_mithi:
+                breaches[forecast.horizon_minutes] = AlertSeverity.CRITICAL
+            elif forecast.predicted_level_cm >= warning_mithi:
+                breaches[forecast.horizon_minutes] = AlertSeverity.HIGH
 
-            if (
-                forecast.predicted_level_cm
-                >= THRESHOLDS[
-                    "water_level_critical_cm"
-                ]
-            ):
-                severity = AlertSeverity.CRITICAL
-
-            elif (
-                forecast.predicted_level_cm
-                >= THRESHOLDS[
-                    "water_level_warning_cm"
-                ]
-            ):
-                severity = AlertSeverity.HIGH
-
-            else:
+        for forecast in forecasts:
+            severity = breaches.get(forecast.horizon_minutes)
+            if severity is None:
                 # Forecast does not currently trigger an alert.
                 continue
 
@@ -576,6 +617,12 @@ class AlertEngine:
             )
 
             if existing:
+                if existing.severity != severity.value:
+                    existing.severity = severity.value
+                    await self._publish_alert_event(
+                        existing,
+                        "updated",
+                    )
                 continue
 
             alert = Alert(
@@ -606,6 +653,25 @@ class AlertEngine:
                 alert,
                 "created",
             )
+
+        # Predicted alerts used to be created once and never cleared, so a
+        # stale forecast breach stayed on the board forever. Clear any active
+        # predicted alert whose horizon no longer breaches.
+        active_result = await db.execute(
+            select(Alert).where(
+                Alert.node_id == node.id,
+                Alert.alert_type == AlertType.PREDICTED_RISK.value,
+                Alert.is_active.is_(True),
+                Alert.scenario_id == scenario_id,
+            )
+        )
+        for alert in active_result.scalars().all():
+            horizon = (alert.trigger_data or {}).get("horizon_minutes")
+            if horizon in breaches:
+                continue
+            alert.is_active = False
+            alert.cleared_at = datetime.now(timezone.utc)
+            await self._publish_alert_event(alert, "cleared")
 
     # =========================================================================
     # COMMUNICATION ALERT

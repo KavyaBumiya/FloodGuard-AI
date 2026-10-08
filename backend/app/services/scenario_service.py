@@ -184,9 +184,9 @@ class ScenarioService:
         """
         async with AsyncSessionLocal() as db:
             result = await db.execute(
-                select(SensorNode).where(SensorNode.is_active == True)
+                select(SensorNode.id).where(SensorNode.is_active.is_(True))
             )
-            nodes = result.scalars().all()
+            node_ids = result.scalars().all()
 
         # Calculate effective rainfall
         drainage_factor = 1.0 - (scenario.drainage_capacity_pct / 100.0)
@@ -197,7 +197,7 @@ class ScenarioService:
 
         forecasts_by_node = {}
         
-        for node in nodes:
+        for node_id in node_ids:
             node_forecasts = []
             
             for horizon in [0, 15, 30, 60]:
@@ -217,7 +217,7 @@ class ScenarioService:
                 )
 
                 forecast = Forecast(
-                    node_id=node.id,
+                    node_id=node_id,
                     model_id=None,
                     scenario_id=scenario.id,
                     made_at=datetime.now(timezone.utc),
@@ -237,7 +237,7 @@ class ScenarioService:
 
                 db.add(
                     RiskAssessment(
-                        node_id=node.id,
+                        node_id=node_id,
                         forecast_id=forecast.id,
                         scenario_id=scenario.id,
                         horizon_minutes=horizon,
@@ -253,7 +253,7 @@ class ScenarioService:
                 )
                 node_forecasts.append(forecast)
 
-            forecasts_by_node[node.id] = node_forecasts
+            forecasts_by_node[node_id] = node_forecasts
 
         await db.commit()
         return forecasts_by_node

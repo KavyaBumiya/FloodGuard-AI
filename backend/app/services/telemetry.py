@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.floodguard import (
     RiskAssessment,
     SensorNode,
+    SourceType,
     TelemetryReading,
 )
 from app.services.flood_risk import (
@@ -83,10 +84,17 @@ async def ingest_telemetry_reading(
     Returns (reading, risk). The caller is responsible for validation and
     node authorization/registration.
     """
+    node_id = getattr(node, "id")
+    # Physical probe readings (iot/replay) are inverted: 0 cm = flooded.
+    # Simulated and scenario readings are ascending Mithi-stage centimetres.
+    inverted = source not in (
+        SourceType.SIMULATED.value,
+        SourceType.SCENARIO.value,
+    )
     prev_result = await db.execute(
         select(TelemetryReading)
         .where(
-            TelemetryReading.node_id == node.id,
+            TelemetryReading.node_id == node_id,
             TelemetryReading.recorded_at < timestamp,
         )
         .order_by(TelemetryReading.recorded_at.desc())
@@ -96,7 +104,12 @@ async def ingest_telemetry_reading(
     rise_rate = 0.0
     if prev:
         interval = (timestamp - prev.recorded_at).total_seconds()
-        rise_rate = calculate_rise_rate(water_level_cm, prev.water_level_cm, interval)
+        rise_rate = calculate_rise_rate(
+            water_level_cm,
+            prev.water_level_cm,
+            interval,
+            inverted=inverted,
+        )
 
     risk = assess_current_risk(
         water_level_cm=water_level_cm,
@@ -106,6 +119,7 @@ async def ingest_telemetry_reading(
         soil_available=soil_moisture is not None,
         terrain_elevation_m=node.reference_elevation_m,
         device_timestamp=timestamp.isoformat(),
+        inverted=inverted,
     )
 
     reading = TelemetryReading(

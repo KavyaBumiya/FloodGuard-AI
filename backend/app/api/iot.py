@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
@@ -195,7 +195,9 @@ async def register_device(
 
     existing = (
         await db.execute(
-            select(SensorNode).where(SensorNode.node_code == body.node_code.upper()).limit(1)
+            select(SensorNode)
+            .filter_by(node_code=body.node_code.upper())
+            .limit(1)
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -244,7 +246,15 @@ async def list_devices(
     console read in this API. A device token is NOT accepted here on purpose --
     the browser must never hold one (see /telemetry for the device-gated path).
     """
-    rows = (await db.execute(select(SensorNode).order_by(SensorNode.created_at.desc()))).scalars().all()
+    rows = (
+        await db.execute(
+            select(
+                SensorNode,
+                func.ST_Y(SensorNode.location).label("lat"),
+                func.ST_X(SensorNode.location).label("lng"),
+            ).order_by(SensorNode.created_at.desc())
+        )
+    ).all()
     return [
         DeviceResponse(
             node_code=d.node_code,
@@ -252,8 +262,8 @@ async def list_devices(
             node_type=d.node_type,
             role=d.role,
             status="active" if d.is_active else "inactive",
-lat=float(d.location.y) if d.location else None,
-        lng=float(d.location.x) if d.location else None,
+            lat=float(lat) if lat is not None else None,
+            lng=float(lng) if lng is not None else None,
             reference_elevation_m=d.reference_elevation_m,
             calibration_offset_cm=d.calibration_offset_cm,
             baseline_level_cm=d.baseline_level_cm,
@@ -262,7 +272,7 @@ lat=float(d.location.y) if d.location else None,
             last_seen_at=d.updated_at.isoformat() if hasattr(d, 'updated_at') and d.updated_at else None,
             created_at=d.created_at.isoformat() if d.created_at else "",
         )
-        for d in rows
+        for d, lat, lng in rows
     ]
 
 
@@ -273,23 +283,28 @@ async def get_device(
     db: AsyncSession = Depends(get_db),
 ):
     """Get details for a specific sensor node."""
-    node = (
+    row = (
         await db.execute(
-            select(SensorNode).where(SensorNode.node_code == node_code.upper()).limit(1)
+            select(
+                SensorNode,
+                func.ST_Y(SensorNode.location).label("lat"),
+                func.ST_X(SensorNode.location).label("lng"),
+            ).where(SensorNode.node_code == node_code.upper()).limit(1)
         )
-    ).scalar_one_or_none()
+    ).first()
 
-    if node is None:
+    if row is None:
         raise HTTPException(status_code=404, detail="Device not found")
 
+    node, lat, lng = row
     return DeviceResponse(
         node_code=node.node_code,
         name=node.name,
         node_type=node.node_type,
         role=node.role,
         status="active" if node.is_active else "inactive",
-        lat=float(node.location.y) if node.location else None,
-        lng=float(node.location.x) if node.location else None,
+        lat=float(lat) if lat is not None else None,
+        lng=float(lng) if lng is not None else None,
         reference_elevation_m=node.reference_elevation_m,
         calibration_offset_cm=node.calibration_offset_cm,
         baseline_level_cm=node.baseline_level_cm,
@@ -353,14 +368,23 @@ async def update_device(
     await db.commit()
     await db.refresh(node)
 
+    coordinates = (
+        await db.execute(
+            select(
+                func.ST_Y(SensorNode.location).label("lat"),
+                func.ST_X(SensorNode.location).label("lng"),
+            ).where(SensorNode.node_code == node.node_code)
+        )
+    ).one()
+    lat, lng = coordinates
     return DeviceResponse(
         node_code=node.node_code,
         name=node.name,
         node_type=node.node_type,
         role=node.role,
         status="active" if node.is_active else "inactive",
-        lat=float(node.location.y) if node.location else None,
-        lng=float(node.location.x) if node.location else None,
+        lat=float(lat) if lat is not None else None,
+        lng=float(lng) if lng is not None else None,
         reference_elevation_m=node.reference_elevation_m,
         calibration_offset_cm=node.calibration_offset_cm,
         baseline_level_cm=node.baseline_level_cm,
@@ -461,7 +485,7 @@ async def latest_reading(
 
     row = await get_latest_reading(db, node.id)
 
-    if not is_recent_physical_reading(node, row):
+    if row is None or not is_recent_physical_reading(node, row):
         raise HTTPException(status_code=404, detail="No recent live IoT telemetry for this device")
 
     age = None

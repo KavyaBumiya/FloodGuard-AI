@@ -94,7 +94,7 @@ const tail = history.slice(-HISTORY_WINDOW)
     })
   }
 
-  const byHorizon = latestPerHorizon(forecasts)
+  const byHorizon = latestPerHorizon(forecasts ?? [])
 
   ;[15, 30, 60].forEach((h) => {
     const f = byHorizon.get(h)
@@ -125,8 +125,8 @@ const tail = history.slice(-HISTORY_WINDOW)
   }
 
   const bounds = [...series, warningThreshold, criticalThreshold].filter(isNum)
-  const lo = Math.min(...bounds, current ?? Infinity)
-  const hi = Math.max(...bounds, current ?? -Infinity)
+  const lo = bounds.length ? Math.min(...bounds, current ?? Infinity) : 0
+  const hi = bounds.length ? Math.max(...bounds, current ?? -Infinity) : 10
   const pad = Math.max(12, (hi - lo) * 0.18)
   const yMin = Math.max(0, Math.floor((lo - pad) / 10) * 10)
   const yMax = Math.ceil((hi + pad) / 10) * 10

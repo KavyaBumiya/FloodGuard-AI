@@ -45,8 +45,12 @@ async def list_alerts(
 
     if node_code:
         # Join with SensorNode
-        query = query.join(SensorNode, Alert.node_id == SensorNode.id).where(
-            SensorNode.node_code == node_code.upper()
+        sensor_node_table = SensorNode.__table__
+        query = query.join(
+            sensor_node_table,
+            Alert.node_id == sensor_node_table.c.id,
+        ).where(
+            sensor_node_table.c.node_code == node_code.upper()
         )
 
     if severity:

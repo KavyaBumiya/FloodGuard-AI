@@ -28,7 +28,11 @@ from app.models.floodguard import (
     ModelRegistry,
     SourceType,
 )
-from app.services.flood_risk import assess_forecast_risk, assess_current_risk
+from app.services.flood_risk import (
+    assess_forecast_risk,
+    assess_current_risk,
+    map_physical_to_mithi,
+)
 from app.integrations import cache
 
 logger = structlog.get_logger()
@@ -274,15 +278,24 @@ class ForecastService:
         return forecasts_by_node
 
     def map_demo_level(self, physical_level_cm: float) -> float:
-        """Map Vadodara demo-channel input to the Mithi simulation level."""
-        minimum = self.settings.demo_input_physical_min_cm
-        maximum = self.settings.demo_input_physical_max_cm
-        if maximum <= minimum:
-            raise ValueError("DEMO_INPUT_PHYSICAL_MAX_CM must exceed MIN_CM")
-        fraction = max(0.0, min(1.0, (physical_level_cm - minimum) / (maximum - minimum)))
-        return self.settings.demo_input_mithi_min_cm + fraction * (
-            self.settings.demo_input_mithi_max_cm - self.settings.demo_input_mithi_min_cm
-        )
+        """Map the inverted physical probe reading onto the Mithi stage scale.
+
+        Delegates to flood_risk.map_physical_to_mithi, the single source of
+        truth for the mapping (the alert engine maps its thresholds with the
+        same function). 0 cm = flooded -> Mithi max; 30 cm = dry -> Mithi min.
+        """
+        return map_physical_to_mithi(physical_level_cm)
+
+    def _level_for_model(self, reading: TelemetryReading) -> float:
+        """One reading -> the model's Mithi stage scale.
+
+        Physical iot readings are inverted probe centimetres and must be
+        mapped; simulated readings are already Mithi-stage values and mapping
+        them again would clamp everything to the maximum.
+        """
+        if reading.source == SourceType.IOT.value:
+            return self.map_demo_level(float(reading.water_level_cm))
+        return float(reading.water_level_cm)
 
     async def generate_mithi_forecasts(
         self,
@@ -312,7 +325,7 @@ class ForecastService:
                     required=MIN_READINGS_FOR_FORECAST,
                 )
                 return []
-            levels = [self.map_demo_level(item.water_level_cm) for item in history]
+            levels = [self.map_demo_level(float(item.water_level_cm)) for item in history]
             rainfall = [item.rainfall_mm_hr for item in history]
 
             # `history` is the most recent FEATURE_WINDOW_SIZE IoT readings, so
@@ -403,7 +416,7 @@ class ForecastService:
             vector = self._build_features(readings, upstream_level_cm)
 
             # Persistence baseline = the most recent mapped level.
-            current_mapped = self.map_demo_level(readings[-1].water_level_cm)
+            current_mapped = self._level_for_model(readings[-1])
 
             forecasts = []
 
@@ -579,12 +592,12 @@ class ForecastService:
         self, readings: list[TelemetryReading], upstream_level_cm: float = 0.0
     ) -> list[float]:
         """Map raw sensor readings onto the model's scale, then vectorise."""
-        levels = [self.map_demo_level(r.water_level_cm) for r in readings]
+        levels = [self._level_for_model(r) for r in readings]
         rainfall = [r.rainfall_mm_hr for r in readings]
         return self._feature_vector(levels, rainfall, upstream_level_cm)
 
-    async def _get_upstream_level(self, db: AsyncSession, node_id: int) -> Optional[float]:
-        """Get latest water level from upstream node."""
+    async def _get_upstream_level(self, db: AsyncSession, node_id: int) -> Optional[tuple[float, str]]:
+        """Get latest (water level, source) from the upstream node."""
         from app.models.floodguard import NodeRelationship
         
         result = await db.execute(
@@ -596,12 +609,18 @@ class ForecastService:
             return None
 
         upstream_result = await db.execute(
-            select(TelemetryReading.water_level_cm)
+            select(
+                TelemetryReading.water_level_cm,
+                TelemetryReading.source,
+            )
             .where(TelemetryReading.node_id == relationship.upstream_node_id)
             .order_by(desc(TelemetryReading.recorded_at))
             .limit(1)
         )
-        return upstream_result.scalar_one_or_none()
+        row = upstream_result.first()
+        if row is None:
+            return None
+        return float(row.water_level_cm), str(row.source)
 
     async def _mapped_upstream_level(self, db: AsyncSession, node_id: int) -> float:
         """Latest upstream reading, mapped onto the model's training scale.
@@ -611,14 +630,18 @@ class ForecastService:
         case, so a lone node matches its training distribution instead of
         contributing a value the model never saw.
 
-        The raw value is deliberately NOT used: `_get_upstream_level` returns
-        physical centimetres (0-30) while this feature is trained on mapped
+        Physical iot values are inverted probe centimetres (0-30) and are
+        mapped; simulated upstream readings are already Mithi stage. The raw
+        value is deliberately NOT used: this feature is trained on mapped
         stage (120-245).
         """
-        raw = await self._get_upstream_level(db, node_id)
-        if raw is None:
+        upstream = await self._get_upstream_level(db, node_id)
+        if upstream is None:
             return 0.0
-        return self.map_demo_level(float(raw))
+        level, source = upstream
+        if source == SourceType.IOT.value:
+            return self.map_demo_level(level)
+        return level
 
     async def _create_insufficient_data_forecasts(
         self, db: AsyncSession, node_id: int, source: str
@@ -638,7 +661,7 @@ class ForecastService:
 
         forecasts = []
         made_at = datetime.now(timezone.utc)
-        baseline_level = latest.water_level_cm
+        baseline_level = self._level_for_model(latest)
 
         for horizon in HORIZONS:
             forecast = Forecast(

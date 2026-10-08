@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Float, literal, select, desc, func
@@ -34,6 +34,7 @@ from app.services.flood_risk import (
     assess_current_risk,
     get_risk_color,
     get_risk_label,
+    map_mithi_to_physical,
 )
 from app.services.telemetry import get_latest_reading, is_recent_physical_reading
 from app.core.config import get_settings
@@ -114,7 +115,7 @@ async def get_impact_summary(
 
     latest: dict[int, FloodLayer] = {}
     for layer in (await db.execute(query)).scalars().all():
-        latest.setdefault(layer.time_step_minutes, layer)
+        latest.setdefault(cast(int, layer.time_step_minutes), layer)
 
     steps = []
     for minutes in sorted(latest):
@@ -284,6 +285,8 @@ async def list_flood_nodes(
                 water_level_cm=mapped_level,
                 rainfall_mm_hr=live_reading.rainfall_mm_hr,
                 rise_rate_cm_per_interval=0.0,
+                # mapped_level is ascending Mithi stage, not probe cm.
+                inverted=False,
             )
             mapped_risk = {
                 "risk_level": normalize_risk(mithi_risk.risk_level),
@@ -537,20 +540,35 @@ async def get_node_forecasts(
             latest = {}
     forecasts = [latest[h] for h in sorted(latest)]
 
+    # Stored forecasts are on the ascending Mithi stage scale, but for a
+    # physical node the observed history beside them is raw (inverted) probe
+    # cm. Return forecasts in the node's own domain so the chart plots one
+    # consistent scale. The inverse mapping swaps bound order, so re-sort.
+    back_to_probe = node.node_type == "physical"
+
+    def _forecast_payload(f: Forecast) -> dict:
+        predicted = f.predicted_level_cm
+        lower = f.lower_bound_cm
+        upper = f.upper_bound_cm
+        if back_to_probe:
+            predicted = map_mithi_to_physical(predicted)
+            if lower is not None and upper is not None:
+                a = map_mithi_to_physical(lower)
+                b = map_mithi_to_physical(upper)
+                lower, upper = (a, b) if a <= b else (b, a)
+        return {
+            "horizon_minutes": f.horizon_minutes,
+            "predicted_level_cm": predicted,
+            "lower_bound_cm": lower,
+            "upper_bound_cm": upper,
+            "target_time": f.target_time.isoformat(),
+            "made_at": f.made_at.isoformat(),
+            "status": f.status,
+        }
+
     return {
         "node_code": node_code,
-        "forecasts": [
-            {
-                "horizon_minutes": f.horizon_minutes,
-                "predicted_level_cm": f.predicted_level_cm,
-                "lower_bound_cm": f.lower_bound_cm,
-                "upper_bound_cm": f.upper_bound_cm,
-                "target_time": f.target_time.isoformat(),
-                "made_at": f.made_at.isoformat(),
-                "status": f.status,
-            }
-            for f in forecasts
-        ],
+        "forecasts": [_forecast_payload(f) for f in forecasts],
     }
 
 

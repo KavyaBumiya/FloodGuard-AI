@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.core.config import get_settings
 from app.core.project_config import get_risk_config
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -90,6 +91,58 @@ DEFAULT_SOIL_AVAILABLE = bool(_DEFAULTS.get("soil_available", False))
 BAND_SEVERE = float(_BANDS.get("severe", 0.75))
 BAND_HIGH = float(_BANDS.get("high", 0.50))
 BAND_MODERATE = float(_BANDS.get("moderate", 0.25))
+
+
+def map_physical_to_mithi(physical_level_cm: float) -> float:
+    """Map the physical probe reading onto the Mithi simulation stage scale.
+
+    The probe is inverted: 0 cm = fully flooded, DEMO_INPUT_PHYSICAL_MAX_CM
+    (30 cm) = dry. The Mithi stage scale is ascending: higher = more water.
+    This is the single source of truth for the mapping — the forecast service
+    and the alert engine's thresholds both use it.
+    """
+    settings = get_settings()
+    pmin = settings.demo_input_physical_min_cm
+    pmax = settings.demo_input_physical_max_cm
+    if pmax <= pmin:
+        raise ValueError("DEMO_INPUT_PHYSICAL_MAX_CM must exceed MIN_CM")
+    fraction = (pmax - physical_level_cm) / (pmax - pmin)
+    fraction = max(0.0, min(1.0, fraction))
+    return settings.demo_input_mithi_min_cm + fraction * (
+        settings.demo_input_mithi_max_cm - settings.demo_input_mithi_min_cm
+    )
+
+
+def map_mithi_to_physical(mithi_level_cm: float) -> float:
+    """Inverse of map_physical_to_mithi: Mithi stage cm -> physical probe cm."""
+    settings = get_settings()
+    mmin = settings.demo_input_mithi_min_cm
+    mmax = settings.demo_input_mithi_max_cm
+    if mmax <= mmin:
+        raise ValueError("DEMO_INPUT_MITHI_MAX_CM must exceed MIN_CM")
+    fraction = (mithi_level_cm - mmin) / (mmax - mmin)
+    fraction = max(0.0, min(1.0, fraction))
+    return settings.demo_input_physical_max_cm - fraction * (
+        settings.demo_input_physical_max_cm - settings.demo_input_physical_min_cm
+    )
+
+
+def water_level_thresholds(*, inverted: bool = True) -> tuple[float, float, float, float]:
+    """Band boundaries for the requested water-level domain.
+
+    Physical probe readings are inverted (low cm = flood) and use the raw
+    config bounds. Mithi-stage readings are ascending, so the same physical
+    boundaries are mapped onto the Mithi scale first.
+    """
+    bounds = (
+        WATER_LEVEL_LOW_CM,
+        WATER_LEVEL_MODERATE_CM,
+        WATER_LEVEL_HIGH_CM,
+        WATER_LEVEL_SEVERE_CM,
+    )
+    if inverted:
+        return bounds
+    return tuple(map_physical_to_mithi(b) for b in bounds)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -196,14 +249,12 @@ def _normalize_linear(
     Returns (band_name, normalized_score 0.0-1.0).
     """
     if inverse:
-        if value <= low:
+        if value >= low:
             return "LOW", 0.0
-        if value <= moderate:
+        if value >= moderate:
             return "MODERATE", 0.33
-        if value <= high:
+        if value >= high:
             return "HIGH", 0.67
-        if value <= severe:
-            return "SEVERE", 1.0
         return "SEVERE", 1.0
     else:
         if value >= severe:
@@ -228,6 +279,7 @@ def assess_current_risk(
     device_timestamp: Optional[str] = None,
     lat: Optional[float] = None,
     lng: Optional[float] = None,
+    inverted: bool = True,
 ) -> FloodRiskAssessment:
     """
     Assess current flood risk from live sensor readings.
@@ -241,6 +293,8 @@ def assess_current_risk(
         terrain_elevation_m: Ground elevation at sensor (optional)
         device_timestamp: ISO timestamp from device
         lat, lng: Sensor location
+        inverted: True for the physical probe domain (0 cm = flooded,
+            30 cm = dry). False for ascending Mithi-stage readings.
 
     Returns:
         FloodRiskAssessment with risk_level, score, and explainable components.
@@ -251,11 +305,8 @@ def assess_current_risk(
     # 1. Water level component
     wl_band, wl_norm = _normalize_linear(
         water_level_cm,
-        WATER_LEVEL_LOW_CM,
-        WATER_LEVEL_MODERATE_CM,
-        WATER_LEVEL_HIGH_CM,
-        WATER_LEVEL_SEVERE_CM,
-        inverse=True,
+        *water_level_thresholds(inverted=inverted),
+        inverse=inverted,
     )
     wl_contrib = wl_norm * WEIGHT_WATER_LEVEL
     components.append(RiskComponent(
@@ -464,6 +515,9 @@ def assess_scenario_risk(
         rise_rate_cm_per_interval=rise_rate,
         terrain_elevation_m=None,
         device_timestamp=None,
+        # Scenario levels come from Mithi-stage presets (100-165 cm) and are
+        # ascending, unlike the inverted physical probe.
+        inverted=False,
     )
 
 
@@ -471,14 +525,24 @@ def calculate_rise_rate(
     current_level: float,
     previous_level: float,
     interval_seconds: float = 300.0,
+    *,
+    inverted: bool = False,
 ) -> float:
     """
     Calculate rise rate in cm per 5-minute interval.
+
+    `inverted=True` is for the physical probe, where a falling reading means
+    the water is rising (0 cm = flooded).
     """
     if interval_seconds <= 0:
         return 0.0
     intervals = interval_seconds / 300.0  # normalize to 5-min intervals
-    return max(0.0, (current_level - previous_level) / intervals)
+    delta = (
+        (previous_level - current_level)
+        if inverted
+        else (current_level - previous_level)
+    )
+    return max(0.0, delta / intervals)
 
 
 def get_risk_color(risk_level: str) -> str:

@@ -132,7 +132,11 @@ async function fetchJson<T>(path: string, options: RequestInit = {}): Promise<T>
   if (response.status === 204) return undefined as T
   const text = await response.text()
   if (!text) return undefined as T
-  return JSON.parse(text) as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new ApiError(response.status, `Invalid JSON from ${path}`, 'network')
+  }
 }
 
 const get = <T>(path: string) => fetchJson<T>(path)

@@ -149,8 +149,14 @@ export default function PredictionPage() {
         {FORECAST_HORIZONS.map((h) => {
           const f = byHorizon.get(h)
           const v = f?.predicted_level_cm
+          // Physical probe thresholds are inverted (crossing = falling below);
+          // virtual nodes carry ascending Mithi-stage thresholds.
           const over =
-            isNum(v) && isNum(selected.warning_threshold_cm) && v > selected.warning_threshold_cm
+            isNum(v) &&
+            isNum(selected.warning_threshold_cm) &&
+            (selected.node_type === 'physical'
+              ? v < selected.warning_threshold_cm
+              : v > selected.warning_threshold_cm)
           return (
             <div key={h} className="horizon-cell">
               <div className="horizon-k">

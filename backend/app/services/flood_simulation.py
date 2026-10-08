@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import numpy as np
 import rasterio
+from rasterio.transform import xy
 import structlog
 from scipy import ndimage
 from shapely.geometry import LineString, Point, Polygon, mapping, shape
@@ -132,6 +133,10 @@ class FloodSimulationEngine:
                 source = "synthetic"
                 synthetic = True
 
+            if self._terrain_grid is None:
+                logger.error("terrain_grid_not_created", source=source)
+                return False
+
             self._terrain_grid["source"] = source
             self._terrain_grid["synthetic"] = synthetic
 
@@ -178,7 +183,7 @@ class FloodSimulationEngine:
 
             # Create coordinate grids
             rows, cols = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
-            xs, ys = rasterio.transform.xy(transform, rows, cols)
+            xs, ys = xy(transform, rows, cols)
             # rasterio.transform.xy returns FLAT sequences even for 2D index
             # arrays; without the reshape every grid lookup downstream raised
             # "float is not subscriptable" and no flood layer was ever stored.
@@ -280,8 +285,9 @@ class FloodSimulationEngine:
         only when the extract is missing or unusable, and that fallback is
         flagged so callers can label the output as degraded.
         """
-        if getattr(self, "_river_line", None) is not None:
-            return self._river_line
+        cached_line = getattr(self, "_river_line", None)
+        if cached_line is not None:
+            return cached_line
 
         line: LineString | None = None
         source = "unavailable"
@@ -352,6 +358,8 @@ class FloodSimulationEngine:
             2D array of water surface elevation for each grid cell
         """
         grid = self._terrain_grid
+        if grid is None:
+            raise RuntimeError("Terrain grid must be loaded before interpolation")
         rows, cols = grid["rows"], grid["cols"]
         lats = np.array(grid["lats"])
         lons = np.array(grid["lons"])
@@ -397,8 +405,8 @@ class FloodSimulationEngine:
         
         # Create interpolator
         if len(dists) > 1:
-            interp = interp1d(dists, river_values, kind='linear', 
-                            bounds_error=False, fill_value='extrapolate')
+            interp = interp1d(dists, river_values, kind='linear',
+                            bounds_error=False, fill_value=0.0)
         else:
             interp = lambda x: river_values[0]
 
@@ -425,6 +433,8 @@ class FloodSimulationEngine:
         Uses flood-fill from river cells.
         """
         grid = self._terrain_grid
+        if grid is None:
+            return depth_grid
         rows, cols = grid["rows"], grid["cols"]
         elevation = np.array(grid["elevation"])
         
@@ -486,6 +496,8 @@ class FloodSimulationEngine:
     ) -> tuple[dict, dict, dict]:
         """Convert raster grids to GeoJSON polygons for depth, risk, boundary."""
         grid = self._terrain_grid
+        if grid is None:
+            raise RuntimeError("Terrain grid is unavailable")
         rows, cols = grid["rows"], grid["cols"]
         lats = np.array(grid["lats"])
         lons = np.array(grid["lons"])
@@ -655,7 +667,7 @@ class FloodSimulationEngine:
         # the map actually draws, so it is counted from the vectorised extent
         # rather than from every cell with depth > 0 (which would include
         # sub-threshold wet cells that are never rendered).
-        grid_resolution_m = float(self._terrain_grid.get("resolution_m") or self.grid_resolution_m)
+        grid_resolution_m = float((self._terrain_grid or {}).get("resolution_m") or self.grid_resolution_m)
         max_depth = float(np.max(depth_grid)) if np.any(depth_grid > 0) else 0.0
         vectorized_cells = sum(
             int(f["properties"].get("cell_count", 0)) for f in depth_fc.get("features", [])

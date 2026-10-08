@@ -354,12 +354,15 @@ export default function DigitalTwin({
     // ── SENSOR MASTS / BEACONS ─────────────────────────────────────────────────
     const sensorMastsGroup = new THREE.Group()
 
-    const latitudes = layoutNodes.map((node) => node.location.lat)
-    const longitudes = layoutNodes.map((node) => node.location.lng)
-    const minLat = Math.min(...latitudes)
-    const maxLat = Math.max(...latitudes)
-    const minLng = Math.min(...longitudes)
-    const maxLng = Math.max(...longitudes)
+    const latitudes = layoutNodes.map((node) => node.location?.lat).filter((n): n is number => typeof n === 'number' && Number.isFinite(n))
+    const longitudes = layoutNodes.map((node) => node.location?.lng).filter((n): n is number => typeof n === 'number' && Number.isFinite(n))
+    // Math.min() with no arguments returns Infinity, which would produce
+    // Infinity/-Infinity bounds and NaN mast positions when no node has a
+    // valid location. Fall back to the scene centre instead.
+    const minLat = latitudes.length ? Math.min(...latitudes) : 19.076
+    const maxLat = latitudes.length ? Math.max(...latitudes) : 19.076
+    const minLng = longitudes.length ? Math.min(...longitudes) : 72.877
+    const maxLng = longitudes.length ? Math.max(...longitudes) : 72.877
     const latRange = Math.max(maxLat - minLat, Number.EPSILON)
     const lngRange = Math.max(maxLng - minLng, Number.EPSILON)
 

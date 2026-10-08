@@ -264,7 +264,9 @@ class VirtualSensorEngine:
         mithi_max = settings.demo_input_mithi_max_cm
         if physical_max <= physical_min:
             raise ValueError("DEMO_INPUT_PHYSICAL_MAX_CM must exceed MIN_CM")
-        normalized = (physical_reading.water_level_cm - physical_min) / (
+        # The probe is inverted: 0 cm = flooded maps to the Mithi maximum,
+        # 30 cm = dry maps to the Mithi minimum.
+        normalized = (physical_max - physical_reading.water_level_cm) / (
             physical_max - physical_min
         )
         normalized = max(0.0, min(1.0, normalized))
