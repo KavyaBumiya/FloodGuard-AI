@@ -103,11 +103,9 @@ const tail = history.slice(-HISTORY_WINDOW)
     const hi = f.upper_bound_cm ?? null
     points.push({
       label: `+${h}m`,
-      // Anchor the dashed run to the last observation so it starts at NOW.
       forecast: f.predicted_level_cm,
       observed: null,
       lower: lo,
-      // Stacked band: `band` is the *height* of the band above `lower`.
       band: isNum(lo) && isNum(hi) ? Math.max(0, hi - lo) : null,
       kind: 'forecast',
     })
