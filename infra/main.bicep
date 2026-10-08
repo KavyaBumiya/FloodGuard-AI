@@ -96,19 +96,22 @@ resource pgFirewallRule 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules
 // ─────────────────────────────────────────────────────────────────────────────
 // Azure Cache for Redis
 // ─────────────────────────────────────────────────────────────────────────────
-resource redis 'Microsoft.Cache/Redis@2023-11-01-preview' = {
+resource redis 'Microsoft.Cache/Redis@2024-11-01' = {
   name: redisName
   location: location
+  // The provider schema omits sku for this supported Redis API version.
+  #disable-next-line BCP187
   sku: {
     name: 'Basic'
     family: 'C'
     capacity: 0
   }
+  #disable-next-line BCP035
   properties: {
     enableNonSslPort: false
     minimumTlsVersion: '1.2'
     redisConfiguration: {
-      maxmemory-policy: 'allkeys-lru'
+      'maxmemory-policy': 'allkeys-lru'
     }
   }
 }
@@ -137,6 +140,12 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
         external: true
         targetPort: 8000
         allowInsecure: false
+        // Socket.IO falls back to HTTP long-polling when WebSocket upgrade is
+        // unavailable. Keep a polling client on the same replica across
+        // requests so reconnects do not receive "session ID unknown".
+        stickySessions: {
+          affinity: 'sticky'
+        }
         traffic: [
           {
             weight: 100
@@ -147,7 +156,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
       registries: [
         {
           server: '${acrName}.azurecr.io'
-          username: acr.properties.adminUsername
+          username: acr.listCredentials().username
           passwordSecretRef: 'acr-password'
         }
       ]
@@ -180,7 +189,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
           name: containerAppName
           image: '${acrName}.azurecr.io/${containerAppName}:latest'
           resources: {
-            cpu: 1.0
+            cpu: 1
             memory: '2Gi'
           }
           env: [
@@ -242,7 +251,6 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
 // Outputs
 // ─────────────────────────────────────────────────────────────────────────────
 output acrLoginServer string = acr.properties.loginServer
-output acrUsername string = acr.properties.adminUsername
 output postgresHost string = pgServer.properties.fullyQualifiedDomainName
 output redisHost string = redis.properties.hostName
 output containerAppUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
