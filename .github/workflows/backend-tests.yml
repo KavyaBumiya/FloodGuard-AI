@@ -1,0 +1,57 @@
+name: Backend Tests
+
+# The deploy workflow builds and ships the image but never ran the suite, so a
+# regression could reach production unobserved. This job runs the tests on every
+# push that touches backend code or the risk configuration.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "config/**"
+      - ".github/workflows/backend-tests.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "config/**"
+      - ".github/workflows/backend-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 3.11 matches the runtime image in backend/Dockerfile, so the suite runs
+      # against the same interpreter the container ships.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # rasterio/netCDF4/scipy need GDAL and HDF5 present at build time; without
+      # these the pip install fails on a bare runner image.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libpq-dev libgdal-dev gdal-bin \
+            libnetcdf-dev libhdf5-dev libopenblas-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pytest
+
+      - name: Compile check
+        run: python -m compileall -q backend/app
+
+      # Tests that need the live database skip themselves when it is
+      # unreachable; everything else must pass.
+      - name: Run tests
+        working-directory: backend
+        run: python -m pytest tests -q
