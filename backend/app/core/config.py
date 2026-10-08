@@ -58,8 +58,10 @@ class Settings(BaseSettings):
     # ── Device auth ──────────────────────────────────────────────────────
     # Bootstrap secret gating POST /api/iot/devices (registration only).
     iot_registration_token: str = ""
-    # Per-device telemetry rate limit (requests/minute).
-    iot_telemetry_rate_limit_per_minute: int = 12
+    # Per-device telemetry rate limit (requests/minute). 0 = unlimited, which
+    # is the default: devices post on their own cadence and we do not second-
+    # guess it. Set a positive value to re-enable throttling.
+    iot_telemetry_rate_limit_per_minute: int = 0
 
     # ── External data sources ────────────────────────────────────────────
     open_meteo_api_base: str = "https://api.open-meteo.com/v1"

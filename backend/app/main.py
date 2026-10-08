@@ -25,6 +25,7 @@ from app.api import about, alerts, demo, flood_monitor, iot, scenarios
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.services.event_bridge import bridge
+from app.services import mithi_demo_pipeline
 from app.services.seed import seed_reference_data
 from app.services.websocket import sio
 
@@ -110,10 +111,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("event_bridge_unavailable", error=str(exc))
 
     await _start_engines()
+    mithi_pipeline_task = mithi_demo_pipeline.start()
     logger.info("floodguard_started", env=settings.app_env)
     try:
         yield
     finally:
+        await mithi_demo_pipeline.stop(mithi_pipeline_task)
         await _stop_engines()
         await bridge.stop()
         await engine.dispose()

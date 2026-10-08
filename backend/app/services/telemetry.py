@@ -214,15 +214,14 @@ async def ingest_telemetry_reading(
         logger.warning("realtime_publish_failed", error=str(exc))
 
     if source == "iot":
+        # Off the request path on purpose: the twin refresh runs four
+        # CPU-bound flood simulations and would otherwise block the event loop
+        # for every reading. Coalesced, so a burst of readings costs one run.
         try:
-            from app.services.mithi_demo_pipeline import process_real_demo_input
+            from app.services.mithi_demo_pipeline import request_run
 
-            await process_real_demo_input()
+            request_run()
         except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "mithi_demo_pipeline_failed",
-                node_code=node.node_code,
-                error=str(exc),
-            )
+            logger.warning("mithi_demo_request_failed", error=str(exc))
 
     return reading, risk

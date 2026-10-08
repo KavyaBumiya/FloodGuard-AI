@@ -413,9 +413,10 @@ async def ingest_telemetry(
     a misbehaving device is auditable and eventually trips the sensor-fault
     alert (3 rejections within an hour).
 
-    Throttled per device at `IOT_TELEMETRY_RATE_LIMIT_PER_MINUTE` (default 12,
-    i.e. a 5 s cadence). Exceeding it returns 429 with `Retry-After`. The check
-    runs before validation so a flood of malformed bodies is also bounded.
+    Throttling is off by default (`IOT_TELEMETRY_RATE_LIMIT_PER_MINUTE=0`):
+    devices post at whatever cadence they choose and are never rejected with
+    429. Set that variable to a positive integer to bound a device; the check
+    runs before validation, so a limit also bounds malformed-body floods.
     """
     rate_limit.enforce(
         device.node_code, get_settings().iot_telemetry_rate_limit_per_minute

@@ -1,6 +1,18 @@
-"""Real Vadodara demo input -> simulated Mithi processing pipeline."""
+"""Real Vadodara demo input -> simulated Mithi processing pipeline.
+
+The pipeline is CPU-bound: `process_real_demo_input` runs four full flood
+simulations, and each one walks the whole DEM grid in Python (see
+`flood_simulation._apply_connectivity_mask` and `_vectorize_flood_layers`).
+Running it inline on the telemetry request blocked the single event loop
+(`--workers 1`), which starved the DB pool and made the dashboard's WebSocket
+drop. So it runs on a background worker instead, coalescing bursts of readings
+into a single run.
+"""
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 from datetime import datetime, timezone
 
 import structlog
@@ -13,6 +25,59 @@ from app.services.forecast_service import forecast_service
 from app.services.websocket import publish_realtime_event
 
 logger = structlog.get_logger()
+
+# Shortest gap between two pipeline runs. Readings arriving faster than this
+# do not each get their own four simulations - they fold into one follow-up.
+MIN_RUN_INTERVAL_S = 5.0
+
+_requested = asyncio.Event()
+_last_finished_at = 0.0
+
+
+def request_run() -> None:
+    """Ask the background worker to refresh the Mithi twin.
+
+    Returns immediately and never raises: the caller is the telemetry request,
+    and a stale twin is far better than a blocked event loop. Bursts of
+    readings coalesce into a single run (see `_worker`).
+    """
+    _requested.set()
+
+
+async def _worker() -> None:
+    global _last_finished_at
+    while True:
+        await _requested.wait()
+        # Enforce the minimum spacing BEFORE the work. Doing it afterwards let
+        # a request that landed outside the run window start another run
+        # immediately, so the coalescing never happened.
+        wait = MIN_RUN_INTERVAL_S - (time.monotonic() - _last_finished_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        # Clear last, so every request that piled up during the wait is
+        # absorbed into the run we are about to do.
+        _requested.clear()
+        try:
+            await process_real_demo_input()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("mithi_demo_pipeline_failed", error=str(exc))
+        _last_finished_at = time.monotonic()
+
+
+def start() -> asyncio.Task:
+    """Start the worker. Returns the task so the caller can cancel it."""
+    return asyncio.create_task(_worker())
+
+
+async def stop(task: asyncio.Task) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+def reset() -> None:
+    """Clear pending state. Tests only."""
+    _requested.clear()
 
 
 async def process_real_demo_input() -> None:
