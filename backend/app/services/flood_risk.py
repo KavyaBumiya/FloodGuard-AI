@@ -142,7 +142,17 @@ def water_level_thresholds(*, inverted: bool = True) -> tuple[float, float, floa
     )
     if inverted:
         return bounds
-    return tuple(map_physical_to_mithi(b) for b in bounds)
+    # Ascending Mithi space: each band STARTS where the next-severer physical
+    # boundary lands, because the probe scale is inverted. Passing the mapped
+    # bounds in the same order shifted every Mithi band one step too low, so
+    # 185 cm (physically ~10 cm, a MODERATE probe reading) reported LOW.
+    settings = get_settings()
+    return (
+        map_physical_to_mithi(settings.demo_input_physical_max_cm),
+        map_physical_to_mithi(bounds[0]),
+        map_physical_to_mithi(bounds[1]),
+        map_physical_to_mithi(bounds[2]),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -392,6 +402,19 @@ def assess_current_risk(
     total_score = sum(c.contribution for c in components)
     total_score = min(1.0, total_score)
 
+    # Worst-driver floor. The weighted sum can only reach 1.0 when every driver
+    # saturates, so a single extreme input stayed quiet: 2 cm of water (SEVERE
+    # band) scored 0.35 x 1.0 = 0.35 and reported MODERATE. The overall level
+    # must never read lower than the worst single driver, because that is the
+    # band the explanation names.
+    worst_normalized = max((c.normalized for c in components), default=0.0)
+    if worst_normalized > total_score:
+        total_score = worst_normalized
+        assumptions.append(
+            "Overall level raised to the worst single driver "
+            f"({max(components, key=lambda c: c.normalized).band})"
+        )
+
     # Determine risk level from configured bands
     risk_level = score_to_level(total_score)
 
@@ -461,6 +484,13 @@ def assess_forecast_risk(
     current_score = current_risk.risk_score
     combined_score = (WEIGHT_CURRENT_RISK * current_score) + fc_contrib
     combined_score = min(1.0, combined_score)
+
+    # Same worst-driver floor as the current-state assessment: WEIGHT_CURRENT_RISK
+    # is a damping factor, so it must not hide a component that is already
+    # SEVERE on its own.
+    worst_normalized = max((c.normalized for c in components), default=0.0)
+    if worst_normalized > combined_score:
+        combined_score = worst_normalized
 
     risk_level = score_to_level(combined_score)
 
