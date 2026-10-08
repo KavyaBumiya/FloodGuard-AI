@@ -304,9 +304,9 @@ async def ingest_payload(
                 select(TelemetryReading).where(
                     TelemetryReading.node_id == node.id,
                     TelemetryReading.event_id == str(event_id),
-                )
+                ).order_by(TelemetryReading.id).limit(1)
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if existing is not None:
             logger.info(
                 "telemetry_duplicate",
