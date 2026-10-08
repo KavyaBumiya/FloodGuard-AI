@@ -285,8 +285,8 @@ async def list_flood_nodes(
                 water_level_cm=mapped_level,
                 rainfall_mm_hr=live_reading.rainfall_mm_hr,
                 rise_rate_cm_per_interval=0.0,
-                # mapped_level is ascending Mithi stage, not probe cm.
-                inverted=False,
+                # mapped_level is Mithi-stage cm, not probe cm.
+                probe_domain=False,
             )
             mapped_risk = {
                 "risk_level": normalize_risk(mithi_risk.risk_level),
@@ -540,10 +540,10 @@ async def get_node_forecasts(
             latest = {}
     forecasts = [latest[h] for h in sorted(latest)]
 
-    # Stored forecasts are on the ascending Mithi stage scale, but for a
-    # physical node the observed history beside them is raw (inverted) probe
-    # cm. Return forecasts in the node's own domain so the chart plots one
-    # consistent scale. The inverse mapping swaps bound order, so re-sort.
+    # Stored forecasts are on the ascending Mithi stage scale. For a physical
+    # node, observed history is also ascending probe cm, so both share the same
+    # direction. Return forecasts in the node's own domain so the chart plots
+    # one consistent scale.
     back_to_probe = node.node_type == "physical"
 
     def _forecast_payload(f: Forecast) -> dict:

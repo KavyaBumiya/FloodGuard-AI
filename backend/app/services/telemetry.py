@@ -85,9 +85,9 @@ async def ingest_telemetry_reading(
     node authorization/registration.
     """
     node_id = node.id
-    # Physical probe readings (iot/replay) are inverted: 0 cm = flooded.
-    # Simulated and scenario readings are ascending Mithi-stage centimetres.
-    inverted = source not in (
+    # Every domain is ascending depth (0 = dry, 30 = submerged). The probe is
+    # not inverted, so there is no per-source direction fork here.
+    probe_domain = source not in (
         SourceType.SIMULATED.value,
         SourceType.SCENARIO.value,
     )
@@ -108,7 +108,6 @@ async def ingest_telemetry_reading(
             water_level_cm,
             prev.water_level_cm,
             interval,
-            inverted=inverted,
         )
 
     risk = assess_current_risk(
@@ -119,7 +118,7 @@ async def ingest_telemetry_reading(
         soil_available=soil_moisture is not None,
         terrain_elevation_m=node.reference_elevation_m,
         device_timestamp=timestamp.isoformat(),
-        inverted=inverted,
+        probe_domain=probe_domain,
     )
 
     reading = TelemetryReading(

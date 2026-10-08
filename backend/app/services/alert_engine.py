@@ -53,14 +53,14 @@ _ALERT_CFG = _DEFAULTS.get("alerts", {})
 _WL = _RISK_CFG.get("thresholds", {}).get("water_level_cm", {})
 
 THRESHOLDS = {
-    # Water-level thresholds are on the INVERTED physical probe scale
-    # (config/risk_thresholds.json: 12+ cm = dry/low, <6 cm = flood alert),
-    # so alerts fire when the reading falls BELOW them.
+    # Water-level thresholds are ASCENDING depth above the sensor datum
+    # (config/risk_thresholds.json: 0 = dry, 20 cm = warning, 25 cm = critical),
+    # so alerts fire when the reading rises ABOVE them.
     "water_level_warning_cm": float(
-        _WL.get("low", 12.0)
+        _WL.get("moderate", 20.0)
     ),
     "water_level_critical_cm": float(
-        _WL.get("moderate", 6.0)
+        _WL.get("severe", 25.0)
     ),
     "rapid_rise_cm_per_5min": float(
         _ALERT_CFG.get("rapid_rise_cm_per_interval", 15.0)
@@ -75,7 +75,7 @@ THRESHOLDS = {
 # Hysteresis prevents alerts from rapidly toggling around a threshold.
 # Only rapid rise uses it: threshold alerts clear as soon as the reading is
 # back inside its band. A water-level deadband calibrated on the old ascending
-# 0-300 cm scale would be far too sticky on the inverted 0-30 cm probe range,
+# 0-300 cm scale would be far too sticky on the ascending 0-30 cm probe range,
 # so `threshold_hysteresis_cm` is deliberately not read here.
 HYSTERESIS = {
     "rapid_rise_cm_per_5min": 5.0,
@@ -315,26 +315,26 @@ class AlertEngine:
 
         level = reading.water_level_cm
 
-        # Physical probe readings are inverted (0 cm = flooded, 30 cm = dry);
-        # simulated and scenario readings are ascending Mithi-stage cm.
-        inverted = reading.source not in (
+        # Every domain is ascending depth (0 = dry), so both branches compare
+        # with `>=` and differ only in where the thresholds come from.
+        probe_domain = reading.source not in (
             SourceType.SIMULATED.value,
             SourceType.SCENARIO.value,
         )
 
-        if inverted:
+        if probe_domain:
             warning_thresh = float(
                 node.warning_threshold_cm
                 or THRESHOLDS["water_level_warning_cm"]
             )
             critical_thresh = THRESHOLDS["water_level_critical_cm"]
-            if warning_thresh <= critical_thresh:
-                # A stale per-device override (set under the old ascending
-                # semantics) would swallow the HIGH band; the config wins.
-                warning_thresh = THRESHOLDS["water_level_warning_cm"]
-            breaches_critical = level < critical_thresh
-            breaches_warning = level < warning_thresh
-            direction = "below"
+            if critical_thresh <= warning_thresh:
+                # A stale per-device override would swallow the CRITICAL band;
+                # the config wins.
+                critical_thresh = max(
+                    THRESHOLDS["water_level_critical_cm"],
+                    warning_thresh + 1.0,
+                )
         else:
             warning_thresh = (
                 float(node.warning_threshold_cm)
@@ -347,11 +347,11 @@ class AlertEngine:
                 map_physical_to_mithi(
                     THRESHOLDS["water_level_critical_cm"]
                 ),
-                warning_thresh,
+                warning_thresh + 1.0,
             )
-            breaches_critical = level >= critical_thresh
-            breaches_warning = level >= warning_thresh
-            direction = "exceeds"
+        breaches_critical = level >= critical_thresh
+        breaches_warning = level >= warning_thresh
+        direction = "exceeds"
 
         if breaches_critical:
             severity = AlertSeverity.CRITICAL
@@ -481,12 +481,6 @@ class AlertEngine:
             reading.water_level_cm,
             previous.water_level_cm,
             interval_seconds,
-            # Physical probe: a falling reading means the water is rising.
-            inverted=reading.source
-            not in (
-                SourceType.SIMULATED.value,
-                SourceType.SCENARIO.value,
-            ),
         )
 
         threshold = THRESHOLDS[
@@ -597,8 +591,8 @@ class AlertEngine:
             newest.setdefault(row.horizon_minutes, row)
         forecasts = [newest[h] for h in sorted(newest)]
 
-        # Forecasts are stored on the ascending Mithi stage scale, so the
-        # inverted physical thresholds are mapped onto that scale first.
+# Forecasts are stored on the ascending Mithi stage scale, so the
+# physical thresholds are mapped onto that scale.
         warning_mithi = map_physical_to_mithi(
             THRESHOLDS["water_level_warning_cm"]
         )

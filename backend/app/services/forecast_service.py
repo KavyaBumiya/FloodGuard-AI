@@ -277,18 +277,18 @@ class ForecastService:
         return forecasts_by_node
 
     def map_demo_level(self, physical_level_cm: float) -> float:
-        """Map the inverted physical probe reading onto the Mithi stage scale.
+        """Map the ascending physical probe reading onto the Mithi stage scale.
 
         Delegates to flood_risk.map_physical_to_mithi, the single source of
         truth for the mapping (the alert engine maps its thresholds with the
-        same function). 0 cm = flooded -> Mithi max; 30 cm = dry -> Mithi min.
+        same function). 0 cm = dry -> Mithi min; 30 cm = submerged -> Mithi max.
         """
         return map_physical_to_mithi(physical_level_cm)
 
     def _level_for_model(self, reading: TelemetryReading) -> float:
         """One reading -> the model's Mithi stage scale.
 
-        Physical iot readings are inverted probe centimetres and must be
+        Physical iot readings are ascending probe centimetres and must be
         mapped; simulated readings are already Mithi-stage values and mapping
         them again would clamp everything to the maximum.
         """
@@ -629,7 +629,7 @@ class ForecastService:
         case, so a lone node matches its training distribution instead of
         contributing a value the model never saw.
 
-        Physical iot values are inverted probe centimetres (0-30) and are
+        Physical iot values are ascending probe centimetres (0-30) and are
         mapped; simulated upstream readings are already Mithi stage. The raw
         value is deliberately NOT used: this feature is trained on mapped
         stage (120-245).

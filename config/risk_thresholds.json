@@ -8,10 +8,11 @@
   },
   "thresholds": {
     "water_level_cm": {
-      "low": 12,
-      "moderate": 6,
-      "high": 3,
-      "severe": 0
+      "_readme": "ASCENDING depth above the sensor datum: 0 = dry, 30 = fully submerged. Bands ascend with severity. 0-20 cm is normal; 20-25 cm escalates; 25+ cm is critical.",
+      "low": 0,
+      "moderate": 20,
+      "high": 22,
+      "severe": 25
     },
     "rise_rate_cm_per_interval": {
       "low": 1,
