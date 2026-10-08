@@ -137,7 +137,7 @@ export default function DashboardPage() {
         <PanelTitle>REAL IoT INPUT → MITHI RIVER DIGITAL TWIN</PanelTitle>
         <div className="rail-metrics">
           <MetricValue
-            label="VADODARA DEMO WATER LEVEL"
+            label="LIVE IoT WATER LEVEL"
             value={simulationInput?.status === 'live' ? fmtNum(simulationInput.water_level_cm, '', 1) : 'WAITING'}
             unit={simulationInput?.status === 'live' ? 'cm' : undefined}
           />
@@ -153,7 +153,7 @@ export default function DashboardPage() {
           />
         </div>
         <div className="muted" style={{ marginTop: 8 }}>
-          DEMO CALIBRATION · Physical IoT Input → Mithi Simulation. This is not a Vadodara-to-Mumbai hydraulic relationship.
+          LIVE IoT INPUT · Physical sensor readings drive the Mithi simulation through the configured calibration.
         </div>
       </section>
 

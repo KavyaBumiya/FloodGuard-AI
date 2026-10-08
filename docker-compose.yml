@@ -44,7 +44,8 @@ services:
       - APP_ENV=development
       - FRONTEND_ORIGIN=http://localhost:3000
       - IOT_REGISTRATION_TOKEN=your-registration-token-here
-      - DEMO_MODE_ENABLED=true
+      - DEMO_MODE_ENABLED=false
+      - RELEASE_LOAD_OSM=true
     volumes:
       - ./backend:/app
       - ./models:/app/models

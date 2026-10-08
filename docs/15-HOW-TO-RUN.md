@@ -81,7 +81,7 @@ image excludes that file). Everything has a working default, so no `.env` is nee
 | `FRONTEND_ORIGIN` | *(empty)* | empty = allow all browser origins |
 | `BACKEND_PORT` | `8000` | host port for the API |
 | `RELEASE_LOAD_OSM` | `true` | set `false` after the first successful load to speed up restarts |
-| `DEMO_MODE_ENABLED` | `true` | |
+| `DEMO_MODE_ENABLED` | `false` | Live IoT input is the default; enable demo/replay explicitly |
 
 ### Other commands
 

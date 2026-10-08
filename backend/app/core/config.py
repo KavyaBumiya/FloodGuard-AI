@@ -131,7 +131,9 @@ class Settings(BaseSettings):
     risk_threshold_high_m: float = 3.0
 
     # ── Demo / replay ────────────────────────────────────────────────────
-    demo_mode_enabled: bool = True
+    # Live IoT is the default. Scenario/replay APIs remain available when
+    # explicitly invoked by an operator.
+    demo_mode_enabled: bool = False
     demo_replay_speed: float = 1.0
 
     # When the real terrain raster is missing, flood simulation must fail loudly
@@ -265,14 +267,23 @@ class Settings(BaseSettings):
         """Resolve a configured dataset path against the repository root.
 
         Settings hold repo-relative paths ("data/terrain/dem_mithi.tif") but the
-        process CWD varies (uvicorn from backend/, alembic, scripts, tests), so
-        resolving against CWD silently produced a missing file and a fallback to
-        synthetic data. Resolve against the repo root instead.
+        process CWD varies (uvicorn from backend/, alembic, scripts, tests).
+        Container images use `/app` as the project root while source checkouts
+        use the repository parent of `backend/`, so try both layouts and retain
+        the first path when the dataset is not present yet.
         """
         candidate = Path(relative_path)
         if candidate.is_absolute():
             return candidate
-        return _REPO_ROOT / candidate
+        candidates = (
+            _REPO_ROOT / candidate,
+            _BACKEND_ROOT / candidate,
+            Path.cwd() / candidate,
+        )
+        for resolved in candidates:
+            if resolved.exists():
+                return resolved
+        return candidates[0]
 
 
 @lru_cache

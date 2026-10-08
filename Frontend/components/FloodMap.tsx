@@ -5,7 +5,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useDispatch, useSelector } from 'react-redux'
 import { actions, RootState } from '@/store'
-import api from '@/lib/api'
+import api, { isNotFound } from '@/lib/api'
 import type { StudyAreaResponse } from '@/lib/api'
 import { COLORS, riskColor } from '@/lib/constants'
 import { forecastArray } from '@/types'
@@ -138,8 +138,8 @@ export default function FloodMap({
       zoomControl: false,
     })
 
-    // Keep the map self-contained. The map is rendered from backend-provided
-    // GeoJSON layers; external tile providers can fail with API-key overlays.
+    // Keep the map dark and vector-only. Geographic context comes from the
+    // backend-provided OSM waterways, roads, buildings and flood layers.
     map.getContainer().classList.add('floodguard-vector-map')
     map.fitBounds([[south, west], [north, east]], { padding: [24, 24] })
 
@@ -223,11 +223,15 @@ export default function FloodMap({
         })
         setLoadedLayerKey(requestKey)
       })
-      .catch(() => {
+      .catch((err) => {
         if (dead.current) return
         setInundationData(null)
         setInundationMeta(null)
-        setLayerError('Inundation layer unavailable for this step')
+        setLayerError(
+          isNotFound(err)
+            ? 'No inundation layer has been generated yet. Send IoT telemetry to create the flood simulation.'
+            : 'Inundation layer request failed. Check the backend connection.',
+        )
         setLoadedLayerKey(requestKey)
       })
     load()

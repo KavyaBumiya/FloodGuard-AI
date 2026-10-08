@@ -61,7 +61,7 @@ export default function DigitalTwinPage() {
       <PageHeader
         eyebrow="3D DIGITAL TWIN"
         title="Mithi River Corridor Twin"
-        subtitle="Mumbai simulation · driven by real Vadodara IoT demo input"
+        subtitle="Mumbai simulation · driven by live registered IoT input"
       />
 
       <div className="twin-page">
@@ -103,10 +103,10 @@ export default function DigitalTwinPage() {
 
           <div className="twin-overlay twin-overlay-br">
             <div className="twin-scenario">
-              <div className="muted">REAL IoT DEMO INPUT: Vadodara Physical Sensor</div>
+              <div className="muted">LIVE IoT INPUT: Registered Physical Sensor</div>
               <div className="muted">
                 {simulationInput?.status === 'live'
-                  ? 'MITHI RIVER DIGITAL TWIN · DRIVEN BY REAL IoT DEMO INPUT'
+                  ? 'MITHI RIVER DIGITAL TWIN · DRIVEN BY LIVE IoT INPUT'
                   : 'WAITING FOR REAL IoT INPUT'}
               </div>
               <div className="float-head">

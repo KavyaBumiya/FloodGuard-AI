@@ -161,7 +161,7 @@ curl https://<app-url>.azurecontainerapps.io/api
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SOCKETIO_MESSAGE_QUEUE` | `true` | Enable Redis pub/sub for multi-replica WebSocket |
-| `RELEASE_LOAD_OSM` | `false` | Load OSM layers on deploy (run once) |
+| `RELEASE_LOAD_OSM` | `true` | Load bundled OSM layers during deployment |
 | `ALLOW_SYNTHETIC_TERRAIN` | `false` | Fail loudly if DEM missing |
 | `APP_ENV` | `production` | Controls CORS, logging |
 | `CESIUM_ION_TOKEN` | `` | For 3D terrain (optional) |

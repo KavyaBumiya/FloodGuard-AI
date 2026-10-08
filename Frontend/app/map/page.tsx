@@ -65,7 +65,7 @@ export default function MapPage() {
       <PageHeader
         eyebrow="GEOSPATIAL SITUATION ROOM"
         title="2D Flood Risk & Inundation Map"
-        subtitle="SIMULATED FLOOD EXTENT · Mithi River Mumbai · driven by real IoT demo input"
+        subtitle="SIMULATED FLOOD EXTENT · Mithi River Mumbai · driven by live IoT input"
       />
 
       <div className="map-page">
@@ -74,9 +74,9 @@ export default function MapPage() {
           <FloodMap activeLayers={activeLayers} opacity={opacity} />
 
           <div className="map-float map-float-tl">
-            <div className="float-head">REAL IoT DEMO INPUT</div>
+            <div className="float-head">LIVE IoT INPUT</div>
             <div className="muted" style={{ marginBottom: 8 }}>
-              Vadodara Physical Sensor → Mithi River Digital Twin
+              Registered physical sensors → Mithi River Digital Twin
             </div>
             <div className="float-head">TIMELINE</div>
             <div className="float-row">
