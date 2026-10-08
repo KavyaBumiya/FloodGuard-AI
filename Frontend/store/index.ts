@@ -85,8 +85,28 @@ const slice = createSlice({
       state.loading = false
       state.error = null
       state.lastUpdatedAt = new Date().toISOString()
-      if (!state.selectedNode && action.payload.length) {
-        state.selectedNode = action.payload[0].node_code
+      const stillThere =
+        state.selectedNode != null &&
+        action.payload.some((n) => n.node_code === state.selectedNode)
+      if (!state.selectedNode || !stillThere) {
+        // Prefer the most-recent live physical node so the hero card never
+        // lands on a retired device (e.g. FLOOD-ESP32-01) while FLOOD-ESP32-02
+        // is streaming. Falls back to nodes[0] when nothing is live.
+        const live = action.payload
+          .filter(
+            (n) =>
+              n.node_type === 'physical' &&
+              n.latest_reading?.source === 'iot' &&
+              n.latest_reading?.timestamp &&
+              Number.isFinite(Date.parse(n.latest_reading.timestamp)),
+          )
+          .sort(
+            (a, b) =>
+              Date.parse(b.latest_reading!.timestamp) -
+              Date.parse(a.latest_reading!.timestamp),
+          )
+        state.selectedNode =
+          live[0]?.node_code ?? action.payload[0]?.node_code ?? null
       }
     },
     simulationInputLoaded(state, action: PayloadAction<SimulationInput>) {

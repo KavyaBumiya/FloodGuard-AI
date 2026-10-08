@@ -300,6 +300,77 @@ async def get_device(
     )
 
 
+class DeviceUpdateRequest(BaseModel):
+    name: str | None = Field(None, max_length=120)
+    role: str | None = Field(None, pattern="^(upstream|midstream|downstream)$")
+    lat: float | None = Field(None, ge=-90, le=90)
+    lng: float | None = Field(None, ge=-180, le=180)
+    warning_threshold_cm: float | None = None
+    baseline_level_cm: float | None = None
+    calibration_offset_cm: float | None = None
+    is_active: bool | None = None
+
+
+@router.patch("/devices/{node_code}", response_model=DeviceResponse)
+async def update_device(
+    node_code: str,
+    body: DeviceUpdateRequest,
+    _: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an existing node (operator only).
+
+    Lets ops fix a node registered without coords (NULL location = invisible
+    on the 2D map, which filters to the Mithi corridor) without re-registering.
+    Device bearer tokens cannot call this on purpose.
+    """
+    node = (
+        await db.execute(
+            select(SensorNode).where(SensorNode.node_code == node_code.upper()).limit(1)
+        )
+    ).scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if (body.lat is None) != (body.lng is None):
+        raise HTTPException(status_code=422, detail="lat and lng must be sent together")
+
+    if body.name is not None:
+        node.name = body.name.strip() or node.name
+    if body.role is not None:
+        node.role = body.role
+    if body.lat is not None and body.lng is not None:
+        node.location = f"POINT({body.lng} {body.lat})"
+    if body.warning_threshold_cm is not None:
+        node.warning_threshold_cm = body.warning_threshold_cm
+    if body.baseline_level_cm is not None:
+        node.baseline_level_cm = body.baseline_level_cm
+    if body.calibration_offset_cm is not None:
+        node.calibration_offset_cm = body.calibration_offset_cm
+    if body.is_active is not None:
+        node.is_active = body.is_active
+
+    await db.commit()
+    await db.refresh(node)
+
+    return DeviceResponse(
+        node_code=node.node_code,
+        name=node.name,
+        node_type=node.node_type,
+        role=node.role,
+        status="active" if node.is_active else "inactive",
+        lat=float(node.location.y) if node.location else None,
+        lng=float(node.location.x) if node.location else None,
+        reference_elevation_m=node.reference_elevation_m,
+        calibration_offset_cm=node.calibration_offset_cm,
+        baseline_level_cm=node.baseline_level_cm,
+        warning_threshold_cm=node.warning_threshold_cm,
+        battery_pct=node.battery_pct,
+        last_seen_at=node.updated_at.isoformat() if hasattr(node, 'updated_at') and node.updated_at else None,
+        created_at=node.created_at.isoformat() if node.created_at else "",
+    )
+
+
 # ── Telemetry ingestion ─────────────────────────────────────────────────────
 
 

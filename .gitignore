@@ -56,3 +56,5 @@ Thumbs.db
 # Live credentials for the hardware team. Never commit: IOT.md carries the real
 # IOT_REGISTRATION_TOKEN and the current tunnel URL.
 IOT.md
+
+# Local ESP32 secrets (added with permission, never tracked).
