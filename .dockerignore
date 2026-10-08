@@ -56,7 +56,9 @@ tmp/
 temp/
 
 # Large data files (handled separately)
-data/terrain/*.tif
+# dem_mithi.tif is required by the flood simulation at runtime — must be in the image
+!data/terrain/dem_mithi.tif
+data/terrain/_*.tif
 data/IMD/
 data/rainfall/
 
