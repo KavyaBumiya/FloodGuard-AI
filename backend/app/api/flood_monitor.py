@@ -279,15 +279,16 @@ async def list_flood_nodes(
                     "status": forecast.status,
                 }
             )
-        mithi_risk = assess_current_risk(
-            water_level_cm=mapped_level,
-            rainfall_mm_hr=live_reading.rainfall_mm_hr,
-            rise_rate_cm_per_interval=0.0,
-        )
-        mapped_risk = {
-            "risk_level": normalize_risk(mithi_risk.risk_level),
-            "risk_score": mithi_risk.risk_score,
-        }
+        if mapped_level is not None:
+            mithi_risk = assess_current_risk(
+                water_level_cm=mapped_level,
+                rainfall_mm_hr=live_reading.rainfall_mm_hr,
+                rise_rate_cm_per_interval=0.0,
+            )
+            mapped_risk = {
+                "risk_level": normalize_risk(mithi_risk.risk_level),
+                "risk_score": mithi_risk.risk_score,
+            }
     return {
         "nodes": node_data,
         "simulation_input": {
