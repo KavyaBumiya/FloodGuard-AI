@@ -581,10 +581,20 @@ class AlertEngine:
                 ),
                 Forecast.status == "ok",
             )
-            .order_by(Forecast.horizon_minutes)
+            .order_by(
+                Forecast.horizon_minutes,
+                desc(Forecast.made_at),
+            )
         )
 
-        forecasts = result.scalars().all()
+        # Every prediction cycle appends new rows. Evaluating all of them kept
+        # alerts alive from forecasts that were superseded many cycles ago, and
+        # which row won a horizon depended on query order. Keep only the newest
+        # issuance per horizon.
+        newest: dict[int, Forecast] = {}
+        for row in result.scalars().all():
+            newest.setdefault(row.horizon_minutes, row)
+        forecasts = [newest[h] for h in sorted(newest)]
 
         # Forecasts are stored on the ascending Mithi stage scale, so the
         # inverted physical thresholds are mapped onto that scale first.
