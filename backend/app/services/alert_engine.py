@@ -73,10 +73,11 @@ THRESHOLDS = {
 }
 
 # Hysteresis prevents alerts from rapidly toggling around a threshold.
+# Only rapid rise uses it: threshold alerts clear as soon as the reading is
+# back inside its band. A water-level deadband calibrated on the old ascending
+# 0-300 cm scale would be far too sticky on the inverted 0-30 cm probe range,
+# so `threshold_hysteresis_cm` is deliberately not read here.
 HYSTERESIS = {
-    "water_level_cm": float(
-        _ALERT_CFG.get("threshold_hysteresis_cm", 10.0)
-    ),
     "rapid_rise_cm_per_5min": 5.0,
 }
 

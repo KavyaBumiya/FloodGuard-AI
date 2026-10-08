@@ -525,10 +525,13 @@ async def device_history(
     from_ts: str | None = Query(None, alias="from"),
     to_ts: str | None = Query(None, alias="to"),
 ):
-    """Chronological telemetry history for a device (console read, not device-gated).
+    """Telemetry history for a device (console read, not device-gated).
 
-    `from` and `to` are ISO 8601 timestamps. Results are ascending by device
-    timestamp so a chart can render them in order.
+    `from` and `to` are ISO 8601 timestamps. `limit` pages over the MOST RECENT
+    rows; the response is ascending by device timestamp so a chart can render
+    them in order. Ordering ascending and then limiting returned the oldest
+    rows in the table, so the dashboard charted a node's first readings for the
+    whole life of the deployment instead of the current window.
     """
     node = (
         await db.execute(
@@ -542,7 +545,7 @@ async def device_history(
     stmt = (
         select(TelemetryReading)
         .where(TelemetryReading.node_id == node.id)
-        .order_by(TelemetryReading.recorded_at.asc())
+        .order_by(TelemetryReading.recorded_at.desc())
     )
     if from_ts:
         try:
@@ -573,7 +576,7 @@ async def device_history(
             risk_score=r.risk_score,
             source=r.source,
         )
-        for r in rows
+        for r in reversed(rows)
     ]
 
 

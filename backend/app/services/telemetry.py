@@ -84,7 +84,7 @@ async def ingest_telemetry_reading(
     Returns (reading, risk). The caller is responsible for validation and
     node authorization/registration.
     """
-    node_id = getattr(node, "id")
+    node_id = node.id
     # Physical probe readings (iot/replay) are inverted: 0 cm = flooded.
     # Simulated and scenario readings are ascending Mithi-stage centimetres.
     inverted = source not in (

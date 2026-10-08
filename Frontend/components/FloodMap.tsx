@@ -248,7 +248,7 @@ export default function FloodMap({
       dead.current = true
       clearInterval(timer)
     }
-  }, [timelineStep, scenarioId])
+  }, [timelineStep, scenarioId, simulationInput?.forecast_status])
 
   // 5. Render / Update Sensors on map
   useEffect(() => {

@@ -29,7 +29,6 @@ from app.models.floodguard import (
     SourceType,
 )
 from app.services.flood_risk import (
-    assess_forecast_risk,
     assess_current_risk,
     map_physical_to_mithi,
 )
