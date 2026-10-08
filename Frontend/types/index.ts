@@ -125,6 +125,7 @@ export interface SimulationInput {
   risk?: { risk_level: string; risk_score?: number | null } | null
   forecasts?: ForecastPoint[]
   timestamp?: string | null
+  forecast_status?: 'ok' | 'insufficient_live_iot_data' | 'waiting_for_iot'
   mapping: {
     label: string
     physical_min_cm: number
