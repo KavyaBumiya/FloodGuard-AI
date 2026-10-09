@@ -607,6 +607,26 @@ class FloodSimulationEngine:
 
         return depth_fc, risk_fc, boundary_fc
 
+    def _build_layers_sync(
+        self,
+        elevation: np.ndarray,
+        sensor_levels: dict[int, float],
+        sensor_locations: dict[int, Point],
+    ) -> tuple[np.ndarray, np.ndarray, dict, dict, dict]:
+        """Run the CPU-heavy raster work outside the asyncio event loop."""
+        water_surface = self._interpolate_water_surface(
+            sensor_levels, sensor_locations
+        )
+        depth_grid = np.maximum(0, water_surface - elevation)
+        depth_grid = np.where(np.isnan(elevation), 0, depth_grid)
+        depth_grid = np.minimum(depth_grid, self.max_depth_m)
+        depth_grid = self._apply_connectivity_mask(depth_grid, water_surface)
+        risk_grid = np.vectorize(self._classify_depth_risk)(depth_grid)
+        depth_fc, risk_fc, boundary_fc = self._vectorize_flood_layers(
+            depth_grid, risk_grid
+        )
+        return water_surface, depth_grid, depth_fc, risk_fc, boundary_fc
+
     async def run_simulation(
         self,
         node_levels: dict[int, float],  # node_id -> water_level_cm
@@ -659,22 +679,21 @@ class FloodSimulationEngine:
                         lon, lat = float(match.group(1)), float(match.group(2))
                         sensor_locations[node.id] = Point(lon, lat)
 
-        # Interpolate water surface
-        water_surface = self._interpolate_water_surface(sensor_levels, sensor_locations)
-
-        # Calculate depth
-        depth_grid = np.maximum(0, water_surface - elevation)
-        depth_grid = np.where(np.isnan(elevation), 0, depth_grid)
-        depth_grid = np.minimum(depth_grid, self.max_depth_m)
-
-        # Apply connectivity mask
-        depth_grid = self._apply_connectivity_mask(depth_grid, water_surface)
-
-        # Classify risk
-        risk_grid = np.vectorize(self._classify_depth_risk)(depth_grid)
-
-        # Vectorize to GeoJSON
-        depth_fc, risk_fc, boundary_fc = self._vectorize_flood_layers(depth_grid, risk_grid)
+        # Raster interpolation, flood-fill, classification and vectorisation are
+        # CPU-bound. Running them inline starves FastAPI's event loop while the
+        # live IoT pipeline refreshes four time steps.
+        (
+            _water_surface,
+            depth_grid,
+            depth_fc,
+            risk_fc,
+            boundary_fc,
+        ) = await asyncio.to_thread(
+            self._build_layers_sync,
+            elevation,
+            sensor_levels,
+            sensor_locations,
+        )
 
         # Calculate summary stats. The reported area must match the polygons
         # the map actually draws, so it is counted from the vectorised extent
