@@ -40,6 +40,20 @@ def is_recent_physical_reading(node: SensorNode, reading: TelemetryReading | Non
     return age_minutes <= DEVICE_STALE_AFTER_MINUTES
 
 
+def is_sensor_online(node: SensorNode, reading: TelemetryReading | None) -> bool:
+    """Require fresh telemetry before counting an active database node online."""
+    if reading is None or not is_recent_physical_reading(node, reading):
+        return False
+
+    recorded_at = reading.recorded_at
+    if recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+    else:
+        recorded_at = recorded_at.astimezone(timezone.utc)
+    age_minutes = (datetime.now(timezone.utc) - recorded_at).total_seconds() / 60
+    return age_minutes <= DEVICE_STALE_AFTER_MINUTES * 3
+
+
 def battery_pct_from_voltage(voltage: float | None) -> float | None:
     """Map a LiPo cell voltage (3.3–4.2 V) onto a 0–100% charge estimate."""
     if voltage is None:

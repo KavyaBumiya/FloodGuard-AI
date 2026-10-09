@@ -36,7 +36,11 @@ from app.services.flood_risk import (
     get_risk_label,
     map_mithi_to_physical,
 )
-from app.services.telemetry import get_latest_reading, is_recent_physical_reading
+from app.services.telemetry import (
+    get_latest_reading,
+    is_recent_physical_reading,
+    is_sensor_online,
+)
 from app.core.config import get_settings
 
 router = APIRouter(prefix="/api/flood", tags=["flood"])
@@ -539,17 +543,12 @@ async def current_flood_summary(
         latest = await get_latest_reading(
             db, node.id, sources=[SourceType.IOT.value, SourceType.SIMULATED.value]
         )
-
         if latest:
-            recorded_at = latest.recorded_at
-            if recorded_at.tzinfo is None:
-                recorded_at = recorded_at.replace(tzinfo=timezone.utc)
-            else:
-                recorded_at = recorded_at.astimezone(timezone.utc)
-            age_minutes = (datetime.now(timezone.utc) - recorded_at).total_seconds() / 60
-            if age_minutes > DEVICE_STALE_AFTER_MINUTES * 3:
+            if not is_sensor_online(node, latest):
                 offline_count += 1
             total_rainfall += latest.rainfall_mm_hr or 0
+        else:
+            offline_count += 1
 
         if latest and is_recent_physical_reading(node, latest):
             level = normalize_risk(latest.risk_level)
