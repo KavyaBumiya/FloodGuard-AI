@@ -134,7 +134,13 @@ async def list_flood_nodes(
     _: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all flood sensor nodes with latest readings."""
+    """List all active physical and virtual nodes with latest readings.
+
+    Virtual nodes are the simulated Mithi stations produced from the IoT
+    propagation pipeline. They belong in the same response as the physical
+    input so the map and prediction views can show the complete observed and
+    simulated network.
+    """
     # Read coordinates with PostGIS ST_X/ST_Y rather than the GeoAlchemy2
     # .x/.y descriptor: geometry written via ST_GeomFromEWKT has no SRID
     # metadata, so the lazy descriptor raises AttributeError on access.
@@ -146,7 +152,7 @@ async def list_flood_nodes(
         )
         .where(
             SensorNode.is_active == True,
-            SensorNode.node_type == "physical",
+            SensorNode.node_type.in_(("physical", "virtual")),
         )
         .order_by(SensorNode.node_code)
     )
@@ -677,7 +683,7 @@ async def get_map_layers(
         rows = await db.execute(
             select(SensorNode).where(
                 SensorNode.is_active == True,
-                SensorNode.node_type == "physical",
+                SensorNode.node_type.in_(("physical", "virtual")),
             )
         )
         features = []

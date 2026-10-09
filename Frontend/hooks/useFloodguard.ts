@@ -118,6 +118,7 @@ export function useFloodguardData() {
 
   useEffect(() => {
     let disposed = false
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
     const socket = getSocket()
 
@@ -151,14 +152,22 @@ export function useFloodguardData() {
       if (disposed) return
       setConnection('degraded')
     }
-    const handleEvent = () => {
-      void refreshAll()
+    const scheduleRefresh = () => {
+      // One telemetry reading emits sensor and risk events, and a fast-moving
+      // test sensor can emit several readings before the first refresh
+      // completes. Coalesce those notifications so they cannot create
+      // overlapping full-dashboard request storms.
+      if (refreshTimer !== null) return
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null
+        if (!disposed) void refreshAll()
+      }, 250)
     }
 
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on('connect_error', handleError)
-    SOCKET_EVENTS.forEach((e) => socket.on(e, handleEvent))
+    SOCKET_EVENTS.forEach((e) => socket.on(e, scheduleRefresh))
 
     // Safety net: if the socket is quiet (or blocked by the browser) the
     // dashboard still refreshes, so the numbers are never silently frozen.
@@ -173,11 +182,12 @@ export function useFloodguardData() {
 
     return () => {
       disposed = true
-      SOCKET_EVENTS.forEach((e) => socket.off(e, handleEvent))
+      SOCKET_EVENTS.forEach((e) => socket.off(e, scheduleRefresh))
       socket.off('connect', handleConnect)
       socket.off('disconnect', handleDisconnect)
       socket.off('connect_error', handleError)
       clearInterval(timer)
+      if (refreshTimer !== null) clearTimeout(refreshTimer)
       // Deliberately not disconnecting the socket: it is a module-level
       // singleton, so tearing it down here aborts an in-flight WS handshake on
       // every consumer unmount (and on the StrictMode dev double-invoke).

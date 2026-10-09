@@ -34,7 +34,10 @@ export default function PredictionPage() {
   // One shared poller for observed history + forecast (was duplicated here and
   // on the dashboard, with two independent refresh cadences).
   const series = useNodeSeries(selected?.node_code)
-  const hasLiveReading = selected?.node_type === 'virtual' || hasRecentLiveIoTReading(selected)
+  const hasLiveReading =
+    selected?.node_type === 'physical'
+      ? hasRecentLiveIoTReading(selected)
+      : Boolean(selected?.latest_reading)
 
   useEffect(() => {
     api
@@ -97,6 +100,10 @@ export default function PredictionPage() {
   const current = hasLiveReading ? series.history[series.history.length - 1]?.water_level_cm ?? null : null
   const nextFc = byHorizon.get(15)?.predicted_level_cm ?? null
   const tr = trend(current, nextFc)
+  const forecastStatus = selected?.forecast_status ?? (byHorizon.size ? 'ok' : 'waiting_for_iot')
+  const nextForecast = byHorizon.get(15)
+  const predictionSource =
+    selected?.node_type === 'physical' ? 'real IoT input' : 'simulated Mithi telemetry'
 
   if (!selected) {
     return (
@@ -175,6 +182,42 @@ export default function PredictionPage() {
           )
         })}
       </div>
+
+      <section className="panel prediction-callout">
+        <PanelTitle
+          right={
+            <DataSourceBadge
+              source={selected.node_type === 'physical' ? 'iot' : 'simulated'}
+            />
+          }
+        >
+          CLEAR PREDICTION
+        </PanelTitle>
+        {forecastStatus === 'ok' && nextForecast ? (
+          <div className="plain-language">
+            Based on <b>{predictionSource}</b>, the model predicts water level will be{' '}
+            <b>{nextForecast.predicted_level_cm.toFixed(0)} cm</b> in 15 minutes
+            {isNum(nextForecast.lower_bound_cm) && isNum(nextForecast.upper_bound_cm)
+              ? ` (likely range ${nextForecast.lower_bound_cm.toFixed(0)}–${nextForecast.upper_bound_cm.toFixed(0)} cm)`
+              : ''}
+            . The level is expected to <b>{trendWord(tr.dir).toLowerCase()}</b>
+            {isNum(tr.delta) ? ` by ${Math.abs(tr.delta).toFixed(0)} cm` : ''}.
+          </div>
+        ) : (
+          <EmptyState
+            title={
+              forecastStatus === 'insufficient_live_iot_data'
+                ? 'NOT ENOUGH IoT HISTORY'
+                : 'PREDICTION NOT READY'
+            }
+            hint={
+              selected.node_type === 'virtual'
+                ? 'The simulated node is visible on the map, but it needs generated telemetry before a forecast can be calculated.'
+                : 'Keep the IoT telemetry running until the backend has enough readings for the model.'
+            }
+          />
+        )}
+      </section>
 
       <div className="pred-grid">
         <section className="panel">

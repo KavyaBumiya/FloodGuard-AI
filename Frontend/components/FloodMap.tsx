@@ -584,6 +584,10 @@ const riskLevel = escapeHtml(p.risk_level || 'unknown')
             {nodes.filter((n) => isInsideStudyArea(n.location)).length} Monitoring Nodes
           </span>
           <span>·</span>
+          <span style={{ color: COLORS.purple }}>
+            {nodes.filter((n) => n.node_type === 'virtual' && isInsideStudyArea(n.location)).length} Simulated
+          </span>
+          <span>·</span>
           {/* `Safe Levels` asserted safety from MISSING data: the effect nulls
               inundationMeta whenever the step's layer fails to load, so a fetch
               error was displayed as reassurance. Say what is actually known. */}
@@ -596,6 +600,9 @@ const riskLevel = escapeHtml(p.risk_level || 'unknown')
         {layerError && (
           <div style={{ fontSize: 10, color: COLORS.danger, marginTop: 3 }}>{layerError}</div>
         )}
+        <div style={{ fontSize: 9, color: COLORS.muted, marginTop: 5 }}>
+          Cyan = physical IoT · purple = simulated Mithi telemetry · marker popups include forecasts
+        </div>
       </div>
 
       {/* Layer loading spinner */}
