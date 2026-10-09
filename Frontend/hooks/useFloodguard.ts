@@ -122,19 +122,12 @@ export function useFloodguardData() {
 
     const socket = getSocket()
 
-    // Initial load. If REST succeeds but the socket still has not connected
-    // shortly after, the console is degraded (data current, realtime down)
-    // rather than offline.
-    //
-    // The socket.connected guard is load-bearing: without it this timer also
-    // fired over a *healthy* connection, briefly reporting DEGRADED on a fully
-    // live console ~2.5s after every page load.
+    // REST is the dashboard's source of truth. Socket.IO is an optional
+    // realtime enhancement; a delayed or reconnecting socket must not make
+    // healthy REST data look degraded.
     void refreshAll().then((ok) => {
       if (disposed || !ok) return
-      setTimeout(() => {
-        if (disposed) return
-        if (!socket.connected) setConnection('degraded')
-      }, 2500)
+      setConnection('live')
     })
 
     const handleConnect = () => {
@@ -145,12 +138,13 @@ export function useFloodguardData() {
     }
     const handleDisconnect = () => {
       if (disposed) return
-      // The socket dropped, but polling continues — degrade, do not go offline.
-      setConnection('degraded')
+      // REST polling continues while Socket.IO reconnects. Do not replace a
+      // healthy REST status with a transient realtime transport state.
     }
     const handleError = () => {
       if (disposed) return
-      setConnection('degraded')
+      // Socket.IO reconnects automatically; REST failures are handled by
+      // refreshAll and are the authoritative connection signal.
     }
     const scheduleRefresh = () => {
       // One telemetry reading emits sensor and risk events, and a fast-moving
@@ -176,7 +170,7 @@ export function useFloodguardData() {
         if (disposed) return
         // On failure refreshAll has already probed /healthz and chosen
         // DEGRADED (backend up, endpoint failing) or OFFLINE (backend down).
-        if (ok) setConnection(socket.connected ? 'live' : 'degraded')
+        if (ok) setConnection('live')
       })
     }, POLL_MS)
 

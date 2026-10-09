@@ -10,6 +10,7 @@ import {
   riskClass,
   riskColor,
   riskLevel,
+  riskLevelForWaterLevel,
   riskRank,
 } from './constants.ts'
 import type { RiskLevel, SourceType } from '@/types'
@@ -66,6 +67,18 @@ test('riskColor is driven by the same table as the badge', () => {
   for (const l of ['low', 'moderate', 'high', 'severe', 'critical'] as const) {
     assert.equal(riskColor(l), RISK_META[riskLevel(l)].color)
   }
+})
+
+test('riskLevelForWaterLevel matches the IoT device bands', () => {
+  assert.equal(riskLevelForWaterLevel(0), 'low')
+  assert.equal(riskLevelForWaterLevel(19.99), 'low')
+  assert.equal(riskLevelForWaterLevel(20), 'moderate')
+  assert.equal(riskLevelForWaterLevel(21.99), 'moderate')
+  assert.equal(riskLevelForWaterLevel(22), 'high')
+  assert.equal(riskLevelForWaterLevel(24.99), 'high')
+  assert.equal(riskLevelForWaterLevel(25), 'severe')
+  assert.equal(riskLevelForWaterLevel(30), 'severe')
+  assert.equal(riskLevelForWaterLevel(null), 'unknown')
 })
 
 test('simulated data is never labelled live', () => {

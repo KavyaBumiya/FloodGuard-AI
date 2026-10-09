@@ -5,7 +5,13 @@ import Link from 'next/link'
 import { useState } from 'react'
 import { useDispatch } from 'react-redux'
 import { Box, Layers, Pause, Play } from 'lucide-react'
-import { RISK_META, hasRecentLiveIoTReading, nodeSource, riskLevel } from '@/lib/constants'
+import {
+  RISK_META,
+  hasRecentLiveIoTReading,
+  nodeSource,
+  riskLevel,
+  riskLevelForWaterLevel,
+} from '@/lib/constants'
 import { EM_DASH, fmtArea, fmtNum, timeAgo } from '@/lib/format'
 import { useAppState } from '@/hooks/useFloodguard'
 import { actions } from '@/store'
@@ -286,8 +292,16 @@ export default function MapPage() {
                   <span
                     className="legend-swatch"
                     style={{
-                      background: RISK_META[riskLevel(n.current_risk?.risk_level)].tint,
-                      borderColor: RISK_META[riskLevel(n.current_risk?.risk_level)].color,
+                      background: RISK_META[
+                        n.node_type === 'physical'
+                          ? riskLevelForWaterLevel(n.latest_reading?.water_level_cm)
+                          : riskLevel(n.current_risk?.risk_level)
+                      ].tint,
+                      borderColor: RISK_META[
+                        n.node_type === 'physical'
+                          ? riskLevelForWaterLevel(n.latest_reading?.water_level_cm)
+                          : riskLevel(n.current_risk?.risk_level)
+                      ].color,
                     }}
                     aria-hidden="true"
                   />

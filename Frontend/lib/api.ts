@@ -4,9 +4,9 @@
  * Every page goes through here; no page invents its own fetch. The backend is
  * the source of truth for forecast, risk, flood simulation and impact numbers.
  *
- * The base URL is environment-driven (NEXT_PUBLIC_API_BASE). When the variable
- * is missing the client falls back to the deployed Azure backend — never to
- * localhost — so a production build cannot silently point at a dev machine.
+ * REST requests use the Vercel same-origin proxy configured in next.config.mjs.
+ * This keeps browser requests same-origin and avoids CORS failures between
+ * Vercel and the Azure backend.
  */
 
 /** Deployed backend. Public configuration only; no secrets live here. */
@@ -15,9 +15,10 @@ export const PRODUCTION_API_BASE =
 
 const trimTrailingSlash = (url: string) => url.replace(/\/+$/, '')
 
-export const API_BASE = trimTrailingSlash(
+export const BACKEND_API_BASE = trimTrailingSlash(
   process.env.NEXT_PUBLIC_API_BASE || PRODUCTION_API_BASE,
 )
+export const API_BASE = ''
 
 /** Give up on a hung request so the UI can show its error state instead of spinning. */
 const REQUEST_TIMEOUT_MS = 20000
@@ -65,7 +66,7 @@ export function describeApiError(err: unknown): string {
   }
   switch (err.kind) {
     case 'network':
-      return `Cannot reach the FloodGuard API at ${API_BASE}. The backend may be down or this device is offline.`
+      return `Cannot reach the FloodGuard API. The backend may be down or this device is offline.`
     case 'auth':
       return `Not authorised (${err.status}): ${err.message}. This session is not allowed to read that data.`
     case 'not_found':

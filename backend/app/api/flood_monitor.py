@@ -6,7 +6,7 @@ Endpoints for current conditions, forecasts, flood layers, risk assessments.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -44,6 +44,29 @@ router = APIRouter(prefix="/api/flood", tags=["flood"])
 # Risk is persisted uppercase by the risk engine. The API contract (and the
 # dashboard) uses lowercase, and level comparisons must not depend on casing.
 RISK_ORDER = {"low": 0, "moderate": 1, "high": 2, "severe": 3}
+LIVE_OUTPUT_MAX_AGE = timedelta(minutes=DEVICE_STALE_AFTER_MINUTES)
+
+
+def _forecast_for_node_domain(node: SensorNode, forecast: Forecast) -> dict:
+    """Return a forecast in the water-level domain used by its sensor node."""
+    predicted = forecast.predicted_level_cm
+    lower = forecast.lower_bound_cm
+    upper = forecast.upper_bound_cm
+    if node.node_type == "physical":
+        predicted = map_mithi_to_physical(predicted)
+        if lower is not None and upper is not None:
+            a = map_mithi_to_physical(lower)
+            b = map_mithi_to_physical(upper)
+            lower, upper = (a, b) if a <= b else (b, a)
+    return {
+        "horizon_minutes": forecast.horizon_minutes,
+        "predicted_level_cm": predicted,
+        "lower_bound_cm": lower,
+        "upper_bound_cm": upper,
+        "target_time": forecast.target_time.isoformat(),
+        "made_at": forecast.made_at.isoformat(),
+        "status": forecast.status,
+    }
 
 
 def normalize_risk(value: str | None) -> str:
@@ -110,7 +133,10 @@ async def get_impact_summary(
     if scenario_id is not None:
         query = query.where(FloodLayer.scenario_id == scenario_id)
     else:
-        query = query.where(FloodLayer.scenario_id.is_(None))
+        query = query.where(
+            FloodLayer.scenario_id.is_(None),
+            FloodLayer.generated_at >= datetime.now(timezone.utc) - LIVE_OUTPUT_MAX_AGE,
+        )
     query = query.order_by(desc(FloodLayer.generated_at))
 
     latest: dict[int, FloodLayer] = {}
@@ -186,10 +212,14 @@ async def list_flood_nodes(
                 Forecast.node_id == node.id,
                 Forecast.scenario_id.is_(None),
                 Forecast.status == "ok",
+                Forecast.target_time > datetime.now(timezone.utc),
             )
-            .order_by(Forecast.horizon_minutes)
+            .order_by(Forecast.horizon_minutes, desc(Forecast.made_at))
         )
-        forecasts = forecast_result.scalars().all() if has_live_reading else []
+        forecast_by_horizon = {}
+        if has_live_reading:
+            for forecast in forecast_result.scalars().all():
+                forecast_by_horizon.setdefault(forecast.horizon_minutes, forecast)
 
         node_data.append({
             "node_code": node.node_code,
@@ -214,15 +244,8 @@ async def list_flood_nodes(
                 "primary_driver": current_risk.primary_driver if current_risk else None,
             } if current_risk else None,
             "forecasts": [
-                {
-                    "horizon_minutes": f.horizon_minutes,
-                    "predicted_level_cm": f.predicted_level_cm,
-                    "lower_bound_cm": f.lower_bound_cm,
-                    "upper_bound_cm": f.upper_bound_cm,
-                    "target_time": f.target_time.isoformat(),
-                    "status": f.status,
-                }
-                for f in forecasts
+                _forecast_for_node_domain(node, forecast)
+                for _, forecast in sorted(forecast_by_horizon.items())
             ],
         })
 
@@ -268,6 +291,7 @@ async def list_flood_nodes(
                 Forecast.input_source == "iot-demo",
                 Forecast.scenario_id.is_(None),
                 Forecast.status == "ok",
+                Forecast.target_time > datetime.now(timezone.utc),
             )
             .order_by(desc(Forecast.made_at))
         )
@@ -378,6 +402,8 @@ async def get_flood_node(
         .where(
             Forecast.node_id == node.id,
             Forecast.scenario_id.is_(None),
+            Forecast.status == "ok",
+            Forecast.target_time > datetime.now(timezone.utc),
         )
         .order_by(Forecast.horizon_minutes, desc(Forecast.made_at))
     )
@@ -405,11 +431,7 @@ async def get_flood_node(
     for f in forecasts:
         if f.horizon_minutes not in forecast_by_horizon:
             forecast_by_horizon[f.horizon_minutes] = {
-                "predicted_level_cm": f.predicted_level_cm,
-                "lower_bound_cm": f.lower_bound_cm,
-                "upper_bound_cm": f.upper_bound_cm,
-                "target_time": f.target_time.isoformat(),
-                "status": f.status,
+                **_forecast_for_node_domain(node, f),
                 "model_version": f.model_id,
             }
 
@@ -534,6 +556,8 @@ async def get_node_forecasts(
         .where(
             Forecast.node_id == node.id,
             Forecast.scenario_id.is_(None),
+            Forecast.status == "ok",
+            Forecast.target_time > datetime.now(timezone.utc),
         )
         .order_by(Forecast.horizon_minutes, desc(Forecast.made_at))
     )
@@ -546,35 +570,9 @@ async def get_node_forecasts(
             latest = {}
     forecasts = [latest[h] for h in sorted(latest)]
 
-    # Stored forecasts are on the ascending Mithi stage scale. For a physical
-    # node, observed history is also ascending probe cm, so both share the same
-    # direction. Return forecasts in the node's own domain so the chart plots
-    # one consistent scale.
-    back_to_probe = node.node_type == "physical"
-
-    def _forecast_payload(f: Forecast) -> dict:
-        predicted = f.predicted_level_cm
-        lower = f.lower_bound_cm
-        upper = f.upper_bound_cm
-        if back_to_probe:
-            predicted = map_mithi_to_physical(predicted)
-            if lower is not None and upper is not None:
-                a = map_mithi_to_physical(lower)
-                b = map_mithi_to_physical(upper)
-                lower, upper = (a, b) if a <= b else (b, a)
-        return {
-            "horizon_minutes": f.horizon_minutes,
-            "predicted_level_cm": predicted,
-            "lower_bound_cm": lower,
-            "upper_bound_cm": upper,
-            "target_time": f.target_time.isoformat(),
-            "made_at": f.made_at.isoformat(),
-            "status": f.status,
-        }
-
     return {
         "node_code": node_code,
-        "forecasts": [_forecast_payload(f) for f in forecasts],
+        "forecasts": [_forecast_for_node_domain(node, forecast) for forecast in forecasts],
     }
 
 
@@ -594,7 +592,10 @@ async def get_flood_layer(
     if scenario_id is not None:
         query = query.where(FloodLayer.scenario_id == scenario_id)
     else:
-        query = query.where(FloodLayer.scenario_id.is_(None))
+        query = query.where(
+            FloodLayer.scenario_id.is_(None),
+            FloodLayer.generated_at >= datetime.now(timezone.utc) - LIVE_OUTPUT_MAX_AGE,
+        )
     
     query = query.order_by(desc(FloodLayer.generated_at)).limit(1)
     
@@ -630,7 +631,10 @@ async def list_flood_layers(
     if scenario_id is not None:
         query = query.where(FloodLayer.scenario_id == scenario_id)
     else:
-        query = query.where(FloodLayer.scenario_id.is_(None))
+        query = query.where(
+            FloodLayer.scenario_id.is_(None),
+            FloodLayer.generated_at >= datetime.now(timezone.utc) - LIVE_OUTPUT_MAX_AGE,
+        )
     
     query = query.order_by(FloodLayer.time_step_minutes, FloodLayer.layer_type)
     result = await db.execute(query)

@@ -7,11 +7,12 @@ import { useDispatch, useSelector } from 'react-redux'
 import { actions, RootState } from '@/store'
 import api, { isNotFound } from '@/lib/api'
 import type { StudyAreaResponse } from '@/lib/api'
-import { COLORS, riskColor } from '@/lib/constants'
+import { COLORS, riskColor, riskLevelForWaterLevel } from '@/lib/constants'
 import { forecastArray } from '@/types'
 import type { GeoJsonFeatureCollection, TimeStep } from '@/types'
 
-const POLL_MS = 3000
+const CONTEXT_REFRESH_MS = 5 * 60 * 1000
+const FLOOD_LAYER_REFRESH_MS = 15 * 1000
 
 /**
  * Escapes HTML special characters to prevent XSS when interpolating
@@ -110,7 +111,7 @@ export default function FloodMap({
         })
     }
     load()
-    const timer = setInterval(load, POLL_MS)
+    const timer = setInterval(load, CONTEXT_REFRESH_MS)
     return () => {
       dead = true
       clearInterval(timer)
@@ -154,7 +155,7 @@ export default function FloodMap({
     }
   }, [studyArea])
 
-  // 2. Keep backend-provided waterways current.
+  // 2. Refresh OSM waterways infrequently; they are static context, not telemetry.
   useEffect(() => {
     let dead = false
     const load = () => {
@@ -168,14 +169,14 @@ export default function FloodMap({
         })
     }
     load()
-    const timer = setInterval(load, POLL_MS)
+    const timer = setInterval(load, CONTEXT_REFRESH_MS)
     return () => {
       dead = true
       clearInterval(timer)
     }
   }, [])
 
-  // 3. Keep backend-provided buildings and roads current.
+  // 3. Refresh static building and road geometry infrequently.
   useEffect(() => {
     if (!studyArea) return
     const { south, west, north, east } = studyArea.bounds
@@ -200,14 +201,15 @@ export default function FloodMap({
         })
     }
     load()
-    const timer = setInterval(load, POLL_MS)
+    const timer = setInterval(load, CONTEXT_REFRESH_MS)
     return () => {
       dead = true
       clearInterval(timer)
     }
   }, [studyArea])
 
-  // 4. Keep the backend-provided inundation layer current.
+  // 4. Poll the dynamic inundation layer less often than telemetry; simulation
+  // generation is asynchronous and the geometry can be relatively large.
   useEffect(() => {
     const requestKey = `${timelineStep}:${scenarioId ?? 'live'}`
     const dead = { current: false }
@@ -243,7 +245,7 @@ export default function FloodMap({
         setLoadedLayerKey(requestKey)
       })
     load()
-    const timer = setInterval(load, POLL_MS)
+    const timer = setInterval(load, FLOOD_LAYER_REFRESH_MS)
     return () => {
       dead.current = true
       clearInterval(timer)
@@ -276,7 +278,13 @@ export default function FloodMap({
       // only nodes that fall inside those bounds, and the provenance panels
       // carry the rest.
       const isPhysical = node.node_type === 'physical'
-      const risk = node.current_risk?.risk_level ?? 'unknown'
+      const waterLevelRisk =
+        isPhysical && node.latest_reading
+          ? riskLevelForWaterLevel(node.latest_reading.water_level_cm)
+          : 'unknown'
+      const risk = waterLevelRisk !== 'unknown'
+        ? waterLevelRisk
+        : node.current_risk?.risk_level ?? 'unknown'
       const color = riskColor(risk)
       const isSelected = node.node_code === selectedNode
 

@@ -93,7 +93,22 @@ export default function PredictionPage() {
     [models],
   )
 
-  const components = risk?.components ?? []
+  const components = useMemo(() => {
+    const raw = risk?.components
+    if (!raw) return []
+    if (Array.isArray(raw)) return raw
+
+    return Object.entries(raw)
+      .filter(([, contribution]) => typeof contribution === 'number' && Number.isFinite(contribution))
+      .map(([name, contribution]) => ({
+        name,
+        value: contribution,
+        normalized: Math.abs(contribution),
+        weight: 1,
+        contribution,
+        band: 'backend score',
+      }))
+  }, [risk?.components])
   const maxContrib = Math.max(0.0001, ...components.map((c) => Math.abs(c.contribution)))
   const byHorizon = latestPerHorizon(series.forecasts)
 

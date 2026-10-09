@@ -62,7 +62,7 @@ export interface RiskResult {
   risk_level: RiskLevel
   risk_score: number
   horizon_minutes: number
-  components?: RiskComponent[]
+  components?: RiskComponent[] | Record<string, number>
   predicted_level_cm?: number | null
   primary_driver?: string
   generated_at?: string

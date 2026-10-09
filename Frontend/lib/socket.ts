@@ -9,7 +9,7 @@
  * and mode changes.
  */
 import { io, Socket } from 'socket.io-client'
-import { API_BASE } from './api'
+import { BACKEND_API_BASE } from './api'
 
 export type RealtimeEventName =
   | 'flood.sensor.updated'
@@ -31,7 +31,7 @@ let socket: Socket | null = null
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(API_BASE, {
+    socket = io(BACKEND_API_BASE, {
       path: '/socket.io',
       transports: ['websocket', 'polling'],
       reconnection: true,

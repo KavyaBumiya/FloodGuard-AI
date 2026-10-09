@@ -93,6 +93,15 @@ export function riskLevel(level: string | null | undefined): RiskLevel {
   return normRisk(level)
 }
 
+/** Classify a physical IoT water level using the device's calibrated bands. */
+export function riskLevelForWaterLevel(waterLevelCm: number | null | undefined): RiskLevel {
+  if (waterLevelCm == null || !Number.isFinite(waterLevelCm)) return 'unknown'
+  if (waterLevelCm >= 25) return 'severe'
+  if (waterLevelCm >= 22) return 'high'
+  if (waterLevelCm >= 20) return 'moderate'
+  return 'low'
+}
+
 export function riskColor(level: string | null | undefined): string {
   return RISK_META[normRisk(level)].color
 }
