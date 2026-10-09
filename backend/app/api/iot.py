@@ -546,7 +546,7 @@ async def device_history(
     stmt = (
         select(TelemetryReading)
         .where(TelemetryReading.node_id == node.id)
-        .order_by(TelemetryReading.recorded_at.desc())
+        .order_by(TelemetryReading.recorded_at.desc(), TelemetryReading.id.desc())
     )
     if from_ts:
         try:

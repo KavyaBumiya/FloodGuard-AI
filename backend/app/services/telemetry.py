@@ -58,7 +58,7 @@ async def get_latest_reading(
     stmt = (
         select(TelemetryReading)
         .where(TelemetryReading.node_id == node_id)
-        .order_by(TelemetryReading.recorded_at.desc())
+        .order_by(TelemetryReading.recorded_at.desc(), TelemetryReading.id.desc())
         .limit(1)
     )
     if sources:
@@ -213,6 +213,13 @@ async def ingest_telemetry_reading(
         logger.warning("realtime_publish_failed", error=str(exc))
 
     if source == "iot":
+        try:
+            from app.services.alert_engine import alert_engine
+
+            alert_engine.request_node_evaluation(node.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("alert_evaluation_request_failed", error=str(exc))
+
         # Off the request path on purpose: the twin refresh runs four
         # CPU-bound flood simulations and would otherwise block the event loop
         # for every reading. Coalesced, so a burst of readings costs one run.

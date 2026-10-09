@@ -76,6 +76,23 @@ def normalize_risk(value: str | None) -> str:
     return str(value).strip().lower()
 
 
+def _current_risk_from_reading(
+    reading: TelemetryReading,
+    assessment: RiskAssessment | None,
+) -> dict:
+    """Keep present-tense risk tied to the exact reading shown to the operator."""
+    matching_assessment = (
+        assessment
+        if assessment is not None and assessment.assessed_at == reading.recorded_at
+        else None
+    )
+    return {
+        "risk_level": normalize_risk(reading.risk_level),
+        "risk_score": reading.risk_score,
+        "primary_driver": matching_assessment.primary_driver if matching_assessment else None,
+    }
+
+
 async def _impact_summary_for_layer(
     db: AsyncSession, layer: FloodLayer
 ) -> dict:
@@ -200,10 +217,12 @@ async def list_flood_nodes(
                 RiskAssessment.node_id == node.id,
                 RiskAssessment.horizon_minutes == 0,
             )
-            .order_by(desc(RiskAssessment.assessed_at))
+            .order_by(desc(RiskAssessment.assessed_at), desc(RiskAssessment.id))
             .limit(1)
         )
-        current_risk = risk_result.scalar_one_or_none() if has_live_reading else None
+        current_assessment = (
+            risk_result.scalar_one_or_none() if has_live_reading else None
+        )
 
         # Get forecasts
         forecast_result = await db.execute(
@@ -237,12 +256,14 @@ async def list_flood_nodes(
                 "rainfall_mm_hr": latest.rainfall_mm_hr if latest else None,
                 "timestamp": latest.recorded_at.isoformat() if latest else None,
                 "source": latest.source if latest else None,
+                "risk_level": latest.risk_level if latest else None,
+                "risk_score": latest.risk_score if latest else None,
             } if latest else None,
-            "current_risk": {
-                "risk_level": normalize_risk(current_risk.risk_level) if current_risk else "unknown",
-                "risk_score": current_risk.risk_score if current_risk else None,
-                "primary_driver": current_risk.primary_driver if current_risk else None,
-            } if current_risk else None,
+            "current_risk": (
+                _current_risk_from_reading(latest, current_assessment)
+                if latest
+                else None
+            ),
             "forecasts": [
                 _forecast_for_node_domain(node, forecast)
                 for _, forecast in sorted(forecast_by_horizon.items())
@@ -392,7 +413,11 @@ async def get_flood_node(
     risk_result = await db.execute(
         select(RiskAssessment)
         .where(RiskAssessment.node_id == node.id)
-        .order_by(RiskAssessment.horizon_minutes, desc(RiskAssessment.assessed_at))
+        .order_by(
+            RiskAssessment.horizon_minutes,
+            desc(RiskAssessment.assessed_at),
+            desc(RiskAssessment.id),
+        )
     )
     risks = risk_result.scalars().all() if has_live_reading else []
 
@@ -426,6 +451,28 @@ async def get_flood_node(
                 },
                 "assessed_at": r.assessed_at.isoformat(),
             }
+
+    current_assessment = next(
+        (
+            risk
+            for risk in risks
+            if risk.horizon_minutes == 0 and risk.assessed_at == latest.recorded_at
+        ),
+        None,
+    ) if latest else None
+    if latest:
+        risk_by_horizon[0] = {
+            **_current_risk_from_reading(latest, current_assessment),
+            "horizon_minutes": 0,
+            "predicted_level_cm": latest.water_level_cm,
+            "components": {
+                "level": current_assessment.level_component,
+                "rise_rate": current_assessment.rise_rate_component,
+                "rainfall": current_assessment.rainfall_component,
+                "soil": current_assessment.soil_component,
+            } if current_assessment else {},
+            "assessed_at": latest.recorded_at.isoformat(),
+        }
 
     forecast_by_horizon = {}
     for f in forecasts:
@@ -504,20 +551,8 @@ async def current_flood_summary(
                 offline_count += 1
             total_rainfall += latest.rainfall_mm_hr or 0
 
-        # Check current risk
-        risk_result = await db.execute(
-            select(RiskAssessment)
-            .where(
-                RiskAssessment.node_id == node.id,
-                RiskAssessment.horizon_minutes == 0,
-            )
-            .order_by(desc(RiskAssessment.assessed_at))
-            .limit(1)
-        )
-        current_risk = risk_result.scalar_one_or_none()
-        
-        if current_risk:
-            level = normalize_risk(current_risk.risk_level)
+        if latest and is_recent_physical_reading(node, latest):
+            level = normalize_risk(latest.risk_level)
             if RISK_ORDER.get(level, 0) > RISK_ORDER.get(highest_risk, 0):
                 highest_risk = level
                 highest_risk_node = node.node_code

@@ -97,6 +97,21 @@ class TelemetryRejected(Exception):
         self.node_code = node_code
 
 
+def is_out_of_order(timestamp: datetime, latest_timestamp: datetime) -> bool:
+    """Compare device timestamps safely across timezone-aware and naive DB rows."""
+    timestamp_utc = (
+        timestamp.replace(tzinfo=timezone.utc)
+        if timestamp.tzinfo is None
+        else timestamp.astimezone(timezone.utc)
+    )
+    latest_utc = (
+        latest_timestamp.replace(tzinfo=timezone.utc)
+        if latest_timestamp.tzinfo is None
+        else latest_timestamp.astimezone(timezone.utc)
+    )
+    return timestamp_utc < latest_utc
+
+
 def validate_payload(payload: dict[str, Any]) -> ValidationResult:
     """Validate a telemetry payload dict.
 
@@ -320,6 +335,21 @@ async def ingest_payload(
                 status="duplicate",
                 node=node,
             )
+
+    latest_result = await db.execute(
+        select(TelemetryReading)
+        .where(
+            TelemetryReading.node_id == node.id,
+            TelemetryReading.source == validation.source,
+        )
+        .order_by(TelemetryReading.recorded_at.desc(), TelemetryReading.id.desc())
+        .limit(1)
+    )
+    latest_reading = latest_result.scalar_one_or_none()
+    if latest_reading and is_out_of_order(validation.timestamp, latest_reading.recorded_at):
+        reason = "Timestamp is older than the latest accepted reading for this source"
+        await _audit_rejection(db, node.node_code, payload, reason)
+        raise TelemetryRejected(reason, node_code=node.node_code)
 
     # Optional live position update — keeps the node marker where the device
     # actually is, which matters for a demo unit that moves.

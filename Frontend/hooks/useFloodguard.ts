@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import api, { describeApiError, isAuthError, isNotFound } from '@/lib/api'
 import { getSocket } from '@/lib/socket'
@@ -35,6 +35,9 @@ const POLL_MS = 3000
  */
 export function useFloodguardData() {
   const dispatch = useDispatch()
+  const refreshInFlight = useRef<Promise<boolean> | null>(null)
+  const refreshPending = useRef(false)
+  const refreshAllRef = useRef<() => Promise<boolean>>(async () => false)
 
   const setConnection = useCallback(
     (state: ConnectionState) => dispatch(actions.connectionChanged(state)),
@@ -42,63 +45,87 @@ export function useFloodguardData() {
   )
 
   const refreshAll = useCallback(async () => {
-    let problem: string | null = null
-
-    // Core: node list + corridor summary. If either fails the dashboard has
-    // nothing trustworthy to render, so it reports the failure instead.
-    try {
-      const [nodes, summary] = await Promise.all([api.nodes(), api.summary()])
-      dispatch(actions.nodesLoaded(nodes.nodes ?? []))
-      if (nodes.simulation_input) {
-        dispatch(actions.simulationInputLoaded(nodes.simulation_input))
-      }
-      dispatch(actions.summaryLoaded(summary))
-    } catch (err) {
-      problem = describeApiError(err)
+    if (refreshInFlight.current) {
+      refreshPending.current = true
+      return refreshInFlight.current
     }
 
-    // Secondary panels: one failing panel must not blank the dashboard. A 404
-    // is "no data for this step" — an honest empty state, not an error. A 401/403
-    // is never swallowed (see isAuthError below).
-    const [active, impacts, demo] = await Promise.allSettled([
-      api.activeAlerts(),
-      api.impactSummary(),
-      api.demoStatus(),
-    ])
+    const request = (async () => {
+      let problem: string | null = null
 
-    if (active.status === 'fulfilled') {
-      dispatch(actions.alertsLoaded(active.value.alerts ?? []))
-    } else if (!isNotFound(active.reason)) {
-      problem ??= isAuthError(active.reason)
-        ? describeApiError(active.reason)
-        : `Active alerts unavailable: ${describeApiError(active.reason)}`
-      dispatch(actions.alertsLoaded([]))
-    }
-
-    if (impacts.status === 'fulfilled') {
-      dispatch(actions.impactsLoaded(impacts.value))
-    } else if (!isNotFound(impacts.reason)) {
-      problem ??= `Impact summary unavailable: ${describeApiError(impacts.reason)}`
-    }
-
-    if (demo.status === 'fulfilled') {
-      dispatch(actions.modeChanged(demo.value.mode))
-    }
-
-    if (problem) {
-      dispatch(actions.errorRaised(problem))
-      // /healthz decides what the operator is told: a reachable backend with a
-      // failing endpoint is DEGRADED; an unreachable one is OFFLINE.
+      // Core: node list + corridor summary. If either fails the dashboard has
+      // nothing trustworthy to render, so it reports the failure instead.
       try {
-        await api.healthz()
-        setConnection('degraded')
-      } catch {
-        setConnection('offline')
+        const [nodes, summary] = await Promise.all([api.nodes(), api.summary()])
+        dispatch(actions.nodesLoaded(nodes.nodes ?? []))
+        if (nodes.simulation_input) {
+          dispatch(actions.simulationInputLoaded(nodes.simulation_input))
+        }
+        dispatch(actions.summaryLoaded(summary))
+      } catch (err) {
+        problem = describeApiError(err)
       }
-      return false
+
+      // Secondary panels: one failing panel must not blank the dashboard. A 404
+      // is "no data for this step" — an honest empty state, not an error. A 401/403
+      // is never swallowed (see isAuthError below).
+      const [active, impacts, demo] = await Promise.allSettled([
+        api.activeAlerts(),
+        api.impactSummary(),
+        api.demoStatus(),
+      ])
+
+      if (active.status === 'fulfilled') {
+        dispatch(actions.alertsLoaded(active.value.alerts ?? []))
+      } else if (!isNotFound(active.reason)) {
+        problem ??= isAuthError(active.reason)
+          ? describeApiError(active.reason)
+          : `Active alerts unavailable: ${describeApiError(active.reason)}`
+        dispatch(actions.alertsLoaded([]))
+      }
+
+      if (impacts.status === 'fulfilled') {
+        dispatch(actions.impactsLoaded(impacts.value))
+      } else if (!isNotFound(impacts.reason)) {
+        problem ??= `Impact summary unavailable: ${describeApiError(impacts.reason)}`
+      }
+
+      if (demo.status === 'fulfilled') {
+        dispatch(actions.modeChanged(demo.value.mode))
+      }
+
+      if (problem) {
+        dispatch(actions.errorRaised(problem))
+        // /healthz decides what the operator is told: a reachable backend with a
+        // failing endpoint is DEGRADED; an unreachable one is OFFLINE.
+        try {
+          await api.healthz()
+          setConnection('degraded')
+        } catch {
+          setConnection('offline')
+        }
+        return false
+      }
+      return true
+    })()
+
+    refreshInFlight.current = request
+    try {
+      return await request
+    } finally {
+      if (refreshInFlight.current === request) {
+        refreshInFlight.current = null
+        if (refreshPending.current) {
+          refreshPending.current = false
+          setTimeout(() => void refreshAllRef.current(), 0)
+        }
+      }
     }
-    return true
   }, [dispatch, setConnection])
+
+  useEffect(() => {
+    refreshAllRef.current = refreshAll
+  }, [refreshAll])
 
   const refreshRisk = useCallback(
     async (nodeCode: string | null) => {

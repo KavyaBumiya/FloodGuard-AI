@@ -126,7 +126,7 @@ def test_mithi_band_edges_are_the_mapped_probe_edges():
 
 @pytest.mark.parametrize(
     "probe_cm, expected",
-    [(0.0, "LOW"), (1.5, "LOW"), (12.0, "LOW"), (19.9, "LOW"),
+    [(0.0, "LOW"), (1.5, "LOW"), (5.0, "LOW"), (12.0, "LOW"), (19.9, "LOW"),
      (20.0, "MODERATE"), (21.0, "MODERATE"),
      (22.0, "HIGH"), (24.0, "HIGH"),
      (25.0, "SEVERE"), (28.0, "SEVERE"), (30.0, "SEVERE")],

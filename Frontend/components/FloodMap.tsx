@@ -7,7 +7,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { actions, RootState } from '@/store'
 import api, { isNotFound } from '@/lib/api'
 import type { StudyAreaResponse } from '@/lib/api'
-import { COLORS, riskColor, riskLevelForWaterLevel } from '@/lib/constants'
+import { COLORS, riskColor } from '@/lib/constants'
 import { forecastArray } from '@/types'
 import type { GeoJsonFeatureCollection, TimeStep } from '@/types'
 
@@ -278,13 +278,7 @@ export default function FloodMap({
       // only nodes that fall inside those bounds, and the provenance panels
       // carry the rest.
       const isPhysical = node.node_type === 'physical'
-      const waterLevelRisk =
-        isPhysical && node.latest_reading
-          ? riskLevelForWaterLevel(node.latest_reading.water_level_cm)
-          : 'unknown'
-      const risk = waterLevelRisk !== 'unknown'
-        ? waterLevelRisk
-        : node.current_risk?.risk_level ?? 'unknown'
+      const risk = node.current_risk?.risk_level ?? 'unknown'
       const color = riskColor(risk)
       const isSelected = node.node_code === selectedNode
 

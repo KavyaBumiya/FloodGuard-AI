@@ -24,7 +24,7 @@ param jwtSecret string
 param iotRegistrationToken string
 
 @description('Frontend origin for CORS')
-param frontendOrigin string = ''
+param frontendOrigin string = 'https://flood-guard-ai-theta.vercel.app'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Resource Names

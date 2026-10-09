@@ -13,9 +13,19 @@ import threading
 from pathlib import Path
 from typing import Any
 
-_BACKEND_ROOT = Path(__file__).resolve().parents[2]  # .../backend
-REPO_ROOT = _BACKEND_ROOT.parent
-CONFIG_DIR = REPO_ROOT / "config"
+
+def _resolve_config_dir(app_root: Path) -> Path:
+    """Find config/ in either the source checkout or the container image."""
+    for root in (app_root, app_root.parent):
+        candidate = root / "config"
+        if (candidate / "risk_thresholds.json").is_file():
+            return candidate
+    return app_root.parent / "config"
+
+
+_APP_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_DIR = _resolve_config_dir(_APP_ROOT)
+REPO_ROOT = CONFIG_DIR.parent
 
 _lock = threading.Lock()
 _cache: dict[str, Any] = {}
@@ -54,7 +64,17 @@ def reload_config() -> None:
 
 
 def get_risk_config() -> dict[str, Any]:
-    return load_config("risk_thresholds")
+    path = config_path("risk_thresholds")
+    if not path.is_file():
+        raise FileNotFoundError(f"Required risk configuration not found: {path}")
+
+    config = load_config("risk_thresholds")
+    water_levels = config.get("thresholds", {}).get("water_level_cm")
+    if not isinstance(water_levels, dict) or not all(
+        key in water_levels for key in ("low", "moderate", "high", "severe")
+    ):
+        raise ValueError(f"Risk configuration has invalid water-level thresholds: {path}")
+    return config
 
 
 def get_virtual_sensor_config() -> dict[str, Any]:

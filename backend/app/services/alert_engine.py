@@ -111,6 +111,8 @@ class AlertEngine:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._eval_interval_seconds = 30
+        self._pending_node_ids: set[int] = set()
+        self._wake_event = asyncio.Event()
 
     # =========================================================================
     # LIFECYCLE
@@ -144,16 +146,38 @@ class AlertEngine:
 
     async def _run(self) -> None:
         """Main alert evaluation loop."""
+        try:
+            await self.evaluate_all()
+        except Exception as exc:
+            logger.error("alert_evaluation_error", error=str(exc))
+
         while self._running:
             try:
-                await self.evaluate_all()
+                await asyncio.wait_for(
+                    self._wake_event.wait(),
+                    timeout=self._eval_interval_seconds,
+                )
+            except asyncio.TimeoutError:
+                try:
+                    await self.evaluate_all()
+                except Exception as exc:
+                    logger.error("alert_evaluation_error", error=str(exc))
+                continue
             except Exception as exc:
                 logger.error(
                     "alert_evaluation_error",
                     error=str(exc),
                 )
+                continue
 
-            await asyncio.sleep(self._eval_interval_seconds)
+            self._wake_event.clear()
+            pending_node_ids = set(self._pending_node_ids)
+            self._pending_node_ids.clear()
+            if pending_node_ids:
+                try:
+                    await self.evaluate_nodes(pending_node_ids)
+                except Exception as exc:
+                    logger.error("alert_evaluation_error", error=str(exc))
 
     # =========================================================================
     # EVALUATION
@@ -184,6 +208,27 @@ class AlertEngine:
                     scenario_id,
                 )
 
+            await db.commit()
+
+    def request_node_evaluation(self, node_id: int) -> None:
+        """Wake the evaluator for a changed live node, coalescing rapid updates."""
+        self._pending_node_ids.add(node_id)
+        self._wake_event.set()
+
+    async def evaluate_nodes(self, node_ids: set[int]) -> None:
+        """Evaluate only the nodes whose telemetry has just changed."""
+        if not node_ids:
+            return
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(SensorNode).where(
+                    SensorNode.__table__.c.is_active.is_(True),
+                    SensorNode.id.in_(node_ids),
+                )
+            )
+            for node in result.scalars().all():
+                await self._evaluate_node(db, node, None)
             await db.commit()
 
     async def _evaluate_node(

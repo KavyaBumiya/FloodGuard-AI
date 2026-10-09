@@ -46,7 +46,7 @@ jobs:
             redisPassword=${{ secrets.REDIS_PASSWORD }}
             jwtSecret=${{ secrets.JWT_SECRET }}
             iotRegistrationToken=${{ secrets.IOT_REG_TOKEN }}
-            frontendOrigin=${{ secrets.FRONTEND_ORIGIN }}
+            frontendOrigin=https://flood-guard-ai-theta.vercel.app
 
       - name: Output connection details
         run: |

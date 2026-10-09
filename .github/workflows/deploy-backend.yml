@@ -45,7 +45,7 @@ jobs:
             --name ${{ env.CONTAINER_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --set-env-vars RELEASE_LOAD_OSM=true DEMO_MODE_ENABLED=false
+            --set-env-vars FRONTEND_ORIGIN=https://flood-guard-ai-theta.vercel.app RELEASE_LOAD_OSM=true DEMO_MODE_ENABLED=false
 
       - name: Wait for deployment
         run: |
