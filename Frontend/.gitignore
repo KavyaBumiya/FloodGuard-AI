@@ -15,8 +15,6 @@ node_modules
 .DS_Store
 .vercel
 .env*
-# Committed env files carry ONLY the public API base URL (no secrets).
-# Anything matching .env*.local (tokens, machine-specific overrides) stays ignored.
+# Only the sanitized template is tracked. Next.js runtime env files stay local
+# or are configured in the deployment platform.
 !.env.example
-!.env.development
-!.env.production

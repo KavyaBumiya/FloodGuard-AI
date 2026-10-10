@@ -44,11 +44,8 @@ Thumbs.db
 .idea/
 .vercel
 .env*
-# Frontend env files that carry only the PUBLIC API base URL (no secrets).
-# Everything else under .env* stays ignored — secrets are never committed.
+# Share templates only; runtime environment files stay local or in deployment settings.
 !.env.example
-!.env.development
-!.env.production
 
 # Large binaries
 *.msi
